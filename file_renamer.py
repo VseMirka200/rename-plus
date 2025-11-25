@@ -1,5 +1,6 @@
 import os
 import re
+import sys
 import threading
 from datetime import datetime
 from pathlib import Path
@@ -7,6 +8,30 @@ from typing import Dict, List, Optional, Tuple
 
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
+
+# Попытка импортировать PIL для закругленных углов
+try:
+    from PIL import Image, ImageDraw, ImageTk
+    HAS_PIL = True
+except ImportError:
+    HAS_PIL = False
+
+# Попытка импортировать поддержку drag and drop для Windows
+has_dragdrop = False
+if sys.platform == 'win32':
+    try:
+        import ctypes
+        from ctypes import wintypes
+        has_dragdrop = True
+    except ImportError:
+        has_dragdrop = False
+
+# Попытка импортировать tkinterdnd2 для лучшей поддержки drag and drop
+try:
+    from tkinterdnd2 import DND_FILES, TkinterDnD
+    HAS_TKINTERDND2 = True
+except ImportError:
+    HAS_TKINTERDND2 = False
 
 from metadata import MetadataExtractor
 from rename_methods import (
@@ -43,6 +68,14 @@ class FileRenamerApp:
         self.undo_stack: List[List[Dict]] = []  # Стек для отмены
         self.current_methods: List[RenameMethod] = []  # Методы
         
+        # Окна для вкладок
+        self.windows = {
+            'actions': None,
+            'tabs': None  # Окно с вкладками для логов, настроек и т.д.
+        }
+        self.tabs_window_notebook = None  # Notebook для вкладок
+        self.log_text = None  # Ссылка на текстовое поле лога
+        
         # Инициализация модуля метаданных
         self.metadata_extractor = MetadataExtractor()
         
@@ -51,10 +84,117 @@ class FileRenamerApp:
         
         # Привязка горячих клавиш
         self.setup_hotkeys()
+        
+        # Настройка drag and drop для файлов из проводника
+        self.setup_drag_drop()
+        
+        # Настройка перестановки файлов в таблице
+        self.setup_treeview_drag_drop()
+    
+    def create_rounded_button(self, parent, text, command, bg_color, fg_color='white', 
+                             font=('Segoe UI', 9, 'bold'), padx=10, pady=6, 
+                             active_bg=None, active_fg='white', width=None):
+        """Создание кнопки с закругленными углами через Canvas"""
+        if active_bg is None:
+            active_bg = bg_color
+        
+        # Фрейм для кнопки
+        btn_frame = tk.Frame(parent, bg=parent.cget('bg'))
+        
+        # Canvas для закругленного фона
+        canvas = tk.Canvas(btn_frame, highlightthickness=0, borderwidth=0,
+                          bg=parent.cget('bg'), height=pady*2 + 16)
+        canvas.pack(fill=tk.BOTH, expand=True)
+        
+        # Сохраняем параметры
+        canvas.btn_text = text
+        canvas.btn_command = command
+        canvas.btn_bg = bg_color
+        canvas.btn_fg = fg_color
+        canvas.btn_active_bg = active_bg
+        canvas.btn_active_fg = active_fg
+        canvas.btn_font = font
+        canvas.btn_state = 'normal'
+        
+        def hex_to_rgb(hex_color):
+            """Конвертация hex в RGB"""
+            hex_color = hex_color.lstrip('#')
+            return tuple(int(hex_color[i:i+2], 16) for i in (0, 2, 4))
+        
+        def draw_button(state='normal'):
+            canvas.delete('all')
+            w = canvas.winfo_width()
+            h = canvas.winfo_height()
+            if w <= 1 or h <= 1:
+                # Если размер еще не установлен, ждем и перерисовываем
+                canvas.after(10, lambda: draw_button(state))
+                return
+            
+            # Минимальная ширина для кнопки
+            if w < 50:
+                w = 50
+            
+            radius = 8
+            color = canvas.btn_active_bg if state == 'active' else canvas.btn_bg
+            text_color = canvas.btn_active_fg if state == 'active' else canvas.btn_fg
+            
+            # Конвертируем цвет в hex для Canvas
+            if isinstance(color, tuple):
+                color_hex = f"#{color[0]:02x}{color[1]:02x}{color[2]:02x}"
+            elif color.startswith('#'):
+                color_hex = color
+            else:
+                color_hex = '#6366F1'  # По умолчанию
+            
+            # Рисуем закругленный прямоугольник через дуги и прямоугольники
+            # Верхние углы
+            canvas.create_arc(0, 0, radius*2, radius*2, start=90, extent=90, 
+                            fill=color_hex, outline=color_hex)
+            canvas.create_arc(w-radius*2, 0, w, radius*2, start=0, extent=90, 
+                            fill=color_hex, outline=color_hex)
+            # Нижние углы
+            canvas.create_arc(0, h-radius*2, radius*2, h, start=180, extent=90, 
+                            fill=color_hex, outline=color_hex)
+            canvas.create_arc(w-radius*2, h-radius*2, w, h, start=270, extent=90, 
+                            fill=color_hex, outline=color_hex)
+            # Центральные прямоугольники
+            canvas.create_rectangle(radius, 0, w-radius, h, fill=color_hex, outline=color_hex)
+            canvas.create_rectangle(0, radius, w, h-radius, fill=color_hex, outline=color_hex)
+            
+            # Текст с автоматическим переносом для маленьких кнопок
+            text = canvas.btn_text
+            # Используем width для автоматического переноса текста
+            canvas.create_text(w//2, h//2, text=text, 
+                             fill=text_color, font=canvas.btn_font, width=max(w-20, 50))
+        
+        def on_enter(e):
+            canvas.btn_state = 'active'
+            draw_button('active')
+        
+        def on_leave(e):
+            canvas.btn_state = 'normal'
+            draw_button('normal')
+        
+        def on_click(e):
+            canvas.btn_command()
+        
+        def on_configure(e):
+            draw_button(canvas.btn_state)
+        
+        canvas.bind('<Button-1>', on_click)
+        canvas.bind('<Enter>', on_enter)
+        canvas.bind('<Leave>', on_leave)
+        canvas.bind('<Configure>', on_configure)
+        
+        # Инициализация
+        canvas.after(10, lambda: draw_button('normal'))
+        
+        return btn_frame
     
     def setup_styles(self) -> None:
         """Настройка современных стилей интерфейса."""
-        style = ttk.Style()
+        self.style = ttk.Style()
+        style = self.style
         
         # Используем современную тему
         try:
@@ -65,45 +205,53 @@ class FileRenamerApp:
             except Exception:
                 pass
         
-        # Современная цветовая схема
+        # Современная цветовая схема (Material Design / Fluent Design)
         self.colors = {
-            'primary': '#6366F1',      # Индиго (современный синий)
-            'primary_hover': '#4F46E5',
-            'primary_light': '#818CF8',
-            'success': '#10B981',      # Изумрудный зеленый
+            'primary': '#6366F1',           # Индиго (современный синий)
+            'primary_hover': '#4F46E5',     # Более насыщенный при наведении
+            'primary_light': '#818CF8',     # Светлый вариант
+            'primary_dark': '#4338CA',      # Темный вариант
+            'success': '#10B981',           # Изумрудный зеленый
             'success_hover': '#059669',
-            'warning': '#F59E0B',      # Янтарный
-            'danger': '#EF4444',       # Красный
+            'warning': '#F59E0B',           # Янтарный
+            'danger': '#EF4444',            # Красный
             'danger_hover': '#DC2626',
-            'bg_main': '#F8FAFC',      # Светло-серый основной фон
-            'bg_secondary': '#F1F5F9', # Еще светлее
-            'bg_card': '#FFFFFF',      # Белый фон карточек
-            'bg_hover': '#F1F5F9',     # Фон при наведении
-            'bg_input': '#FFFFFF',     # Фон полей ввода
-            'border': '#E2E8F0',       # Светло-серый цвет границ
-            'border_focus': '#6366F1',  # Синяя рамка при фокусе
-            'text_primary': '#1E293B', # Темно-синий основной текст
-            'text_secondary': '#64748B', # Серый вторичный текст
-            'text_muted': '#94A3B8',   # Приглушенный текст
-            'header_bg': '#1E293B',    # Темно-синий фон заголовка
-            'header_text': '#FFFFFF',  # Белый текст в заголовке
-            'accent': '#8B5CF6',       # Фиолетовый акцент
-            'shadow': '#E2E8F0'        # Цвет тени
+            'info': '#3B82F6',              # Синий информационный
+            'bg_main': '#F8FAFC',           # Очень светло-серый фон
+            'bg_secondary': '#F1F5F9',      # Вторичный фон
+            'bg_card': '#FFFFFF',           # Белый фон карточек
+            'bg_hover': '#F1F5F9',          # Фон при наведении
+            'bg_input': '#FFFFFF',          # Фон полей ввода
+            'bg_elevated': '#FFFFFF',       # Приподнятый элемент
+            'border': '#E2E8F0',            # Светло-серый цвет границ
+            'border_focus': '#6366F1',      # Синяя рамка при фокусе
+            'border_light': '#F1F5F9',      # Очень светлая граница
+            'text_primary': '#0F172A',      # Почти черный для текста
+            'text_secondary': '#475569',    # Серый вторичный текст
+            'text_muted': '#94A3B8',        # Приглушенный текст
+            'header_bg': '#FFFFFF',         # Белый фон заголовка (с тенью)
+            'header_text': '#0F172A',       # Темный текст в заголовке
+            'accent': '#8B5CF6',            # Фиолетовый акцент
+            'shadow': 'rgba(0,0,0,0.1)',    # Прозрачная тень
+            'shadow_lg': 'rgba(0,0,0,0.15)', # Большая тень
+            'glow': 'rgba(99, 102, 241, 0.5)', # Свечение
+            'gradient_start': '#6366F1',    # Начало градиента
+            'gradient_end': '#8B5CF6'       # Конец градиента
         }
         
         # Настройка стилей кнопок - современный дизайн с четким текстом
         style.configure('Primary.TButton', 
                        background=self.colors['primary'],
                        foreground='white',
-                       font=('Segoe UI', 10, 'bold'),
-                       padding=(16, 10),
+                       font=('Segoe UI', 9, 'bold'),
+                       padding=(10, 6),
                        borderwidth=0,
                        focuscolor='none',
                        relief='flat',
                        anchor='center')
         style.map('Primary.TButton',
                  background=[('active', self.colors['primary_hover']), 
-                           ('pressed', self.colors['primary_hover']),
+                           ('pressed', self.colors['primary_dark']),
                            ('disabled', '#94A3B8')],
                  foreground=[('active', 'white'), 
                           ('pressed', 'white'),
@@ -113,15 +261,15 @@ class FileRenamerApp:
         style.configure('Success.TButton',
                        background=self.colors['success'],
                        foreground='white',
-                       font=('Segoe UI', 10, 'bold'),
-                       padding=(16, 10),
+                       font=('Segoe UI', 9, 'bold'),
+                       padding=(10, 6),
                        borderwidth=0,
                        focuscolor='none',
                        relief='flat',
                        anchor='center')
         style.map('Success.TButton',
                  background=[('active', self.colors['success_hover']), 
-                           ('pressed', self.colors['success_hover']),
+                           ('pressed', '#047857'),
                            ('disabled', '#94A3B8')],
                  foreground=[('active', 'white'), 
                           ('pressed', 'white'),
@@ -131,15 +279,15 @@ class FileRenamerApp:
         style.configure('Danger.TButton',
                        background=self.colors['danger'],
                        foreground='white',
-                       font=('Segoe UI', 10, 'bold'),
-                       padding=(14, 9),
+                       font=('Segoe UI', 9, 'bold'),
+                       padding=(10, 6),
                        borderwidth=0,
                        focuscolor='none',
                        relief='flat',
                        anchor='center')
         style.map('Danger.TButton',
                  background=[('active', self.colors['danger_hover']), 
-                           ('pressed', self.colors['danger_hover']),
+                           ('pressed', '#B91C1C'),
                            ('disabled', '#94A3B8')],
                  foreground=[('active', 'white'), 
                           ('pressed', 'white'),
@@ -149,7 +297,7 @@ class FileRenamerApp:
         # Стиль для обычных кнопок - цветной (оранжевый/янтарный)
         style.configure('TButton',
                        font=('Segoe UI', 9, 'bold'),
-                       padding=(14, 9),
+                       padding=(10, 6),
                        borderwidth=0,
                        relief='flat',
                        background='#F59E0B',
@@ -167,7 +315,7 @@ class FileRenamerApp:
         # Стиль для вторичных кнопок (светло-синий)
         style.configure('Secondary.TButton',
                        font=('Segoe UI', 9, 'bold'),
-                       padding=(14, 9),
+                       padding=(10, 6),
                        borderwidth=0,
                        relief='flat',
                        background='#818CF8',
@@ -185,7 +333,7 @@ class FileRenamerApp:
         # Стиль для предупреждающих кнопок (янтарный)
         style.configure('Warning.TButton',
                        font=('Segoe UI', 9, 'bold'),
-                       padding=(14, 9),
+                       padding=(10, 6),
                        borderwidth=0,
                        relief='flat',
                        background='#F59E0B',
@@ -200,17 +348,29 @@ class FileRenamerApp:
                           ('disabled', '#E2E8F0')],
                  relief=[('pressed', 'sunken'), ('!pressed', 'flat')])
         
-        # Стиль для LabelFrame - карточки с тенью
+        # Стиль для LabelFrame - карточки с тенью (минималистичный с закруглениями)
         style.configure('Card.TLabelframe', 
                        background=self.colors['bg_card'],
                        borderwidth=1,
                        relief='flat',
                        bordercolor=self.colors['border'],
-                       padding=20)
+                       padding=10)
         style.configure('Card.TLabelframe.Label',
                        background=self.colors['bg_card'],
                        foreground=self.colors['text_primary'],
-                       font=('Segoe UI', 12, 'bold'))
+                       font=('Segoe UI', 9, 'bold'),
+                       padding=(0, 0, 0, 5))
+        
+        # Стиль для PanedWindow (разделитель панелей)
+        style.configure('TPanedwindow',
+                       background=self.colors['bg_main'])
+        style.configure('TPanedwindow.Sash',
+                       sashthickness=6,
+                       sashrelief='flat',
+                       sashpad=0)
+        style.map('TPanedwindow.Sash',
+                 background=[('hover', self.colors['primary_light']),
+                           ('active', self.colors['primary'])])
         
         # Стиль для обычных меток
         style.configure('TLabel',
@@ -221,6 +381,20 @@ class FileRenamerApp:
         # Стиль для Frame
         style.configure('TFrame',
                        background=self.colors['bg_main'])
+        
+        # Стиль для Notebook (вкладок) - такой же размер как у кнопок
+        style.configure('TNotebook',
+                       background=self.colors['bg_main'],
+                       borderwidth=0)
+        style.configure('TNotebook.Tab',
+                       padding=(10, 6),
+                       font=('Segoe UI', 9, 'bold'),
+                       background=self.colors['bg_secondary'],
+                       foreground=self.colors['text_primary'])
+        style.map('TNotebook.Tab',
+                 background=[('selected', self.colors['bg_card']),
+                           ('active', self.colors['bg_hover'])],
+                 expand=[('selected', [1, 1, 1, 0])])
         
         # Стиль для Radiobutton
         style.configure('TRadiobutton',
@@ -242,8 +416,8 @@ class FileRenamerApp:
                        foreground=self.colors['text_primary'],
                        borderwidth=1,
                        relief='flat',
-                       padding=10,
-                       font=('Segoe UI', 10))
+                       padding=8,
+                       font=('Segoe UI', 9))
         style.map('TEntry',
                  bordercolor=[('focus', self.colors['border_focus']),
                             ('!focus', self.colors['border'])],
@@ -258,8 +432,8 @@ class FileRenamerApp:
                        foreground=self.colors['text_primary'],
                        borderwidth=1,
                        relief='flat',
-                       padding=10,
-                       font=('Segoe UI', 10))
+                       padding=8,
+                       font=('Segoe UI', 9))
         style.map('TCombobox',
                  bordercolor=[('focus', self.colors['border_focus']),
                             ('!focus', self.colors['border'])],
@@ -269,120 +443,192 @@ class FileRenamerApp:
         # Стиль для Treeview - современная таблица
         style.configure('Custom.Treeview',
                        rowheight=32,
-                       font=('Segoe UI', 10),
+                       font=('Segoe UI', 9),
                        background='white',
                        foreground=self.colors['text_primary'],
                        fieldbackground='white',
                        borderwidth=0)
         style.configure('Custom.Treeview.Heading',
-                       font=('Segoe UI', 10, 'bold'),
+                       font=('Segoe UI', 9, 'bold'),
                        background=self.colors['bg_secondary'],
                        foreground=self.colors['text_primary'],
-                       borderwidth=1,
-                       relief='flat')
+                       borderwidth=0,
+                       relief='flat',
+                       padding=6)
         style.map('Custom.Treeview.Heading',
                  background=[('active', self.colors['bg_hover'])])
+        
+        # Стиль для выделенных строк
+        style.map('Custom.Treeview',
+                 background=[('selected', self.colors['primary_light'])],
+                 foreground=[('selected', 'white')])
         
         # Настройка фона окна
         self.root.configure(bg=self.colors['bg_main'])
         
-        # Привязка изменения размера окна
+        # Привязка изменения размера окна для адаптивного масштабирования
         self.root.bind('<Configure>', self.on_window_resize)
+        
+    def on_window_resize(self, event=None):
+        """Обработчик изменения размера окна для адаптивного масштабирования"""
+        if event and event.widget == self.root:
+            # Обновляем размеры колонок таблицы при изменении размера окна
+            if hasattr(self, 'list_frame') and self.list_frame:
+                try:
+                    # Используем небольшую задержку для получения актуального размера
+                    self.root.after(50, self.update_tree_columns)
+                    # Также обновляем при следующем событии для более плавной работы
+                    self.root.after(200, self.update_tree_columns)
+                except:
+                    pass
+    
+    def setup_window_resize_handler(self, window, canvas=None, canvas_window=None):
+        """Настройка обработчика изменения размера для окна с canvas"""
+        def on_resize(event):
+            if canvas and canvas_window is not None:
+                try:
+                    canvas_width = event.width
+                    canvas.itemconfig(canvas_window, width=canvas_width)
+                except:
+                    pass
+        
+        if canvas:
+            window.bind('<Configure>', on_resize)
+    
+    def update_tree_columns(self):
+        """Обновление размеров колонок таблицы в соответствии с размером окна"""
+        if hasattr(self, 'list_frame') and hasattr(self, 'tree') and self.list_frame and self.tree:
+            try:
+                list_frame_width = self.list_frame.winfo_width()
+                if list_frame_width > 100:  # Минимальная ширина для расчетов
+                    # Вычитаем ширину скроллбара (примерно 20px) и отступы
+                    available_width = max(list_frame_width - 50, 400)
+                    
+                    self.tree.column("old_name", width=int(available_width * 0.22))
+                    self.tree.column("new_name", width=int(available_width * 0.22))
+                    self.tree.column("extension", width=int(available_width * 0.10))
+                    self.tree.column("path", width=int(available_width * 0.35))
+                    self.tree.column("status", width=int(available_width * 0.11))
+            except Exception as e:
+                pass
     
     def create_widgets(self):
         """Создание всех виджетов интерфейса"""
         
-        # === ЗАГОЛОВОК ===
-        header_frame = tk.Frame(self.root, bg=self.colors['header_bg'], height=70)
+        # === ЗАГОЛОВОК (современный дизайн) ===
+        header_frame = tk.Frame(self.root, bg=self.colors['header_bg'], height=85)
         header_frame.pack(fill=tk.X)
         header_frame.pack_propagate(False)
         
         header_content = tk.Frame(header_frame, bg=self.colors['header_bg'])
-        header_content.pack(fill=tk.BOTH, expand=True, padx=25, pady=15)
+        header_content.pack(fill=tk.BOTH, expand=True, padx=30, pady=22)
         
-        # Заголовок слева
-        title_label = tk.Label(header_content, text="📝 Назови", 
+        # Настройка масштабирования заголовка
+        header_frame.grid_columnconfigure(0, weight=1)
+        
+        # Заголовок слева с улучшенной типографикой
+        title_container = tk.Frame(header_content, bg=self.colors['header_bg'])
+        title_container.pack(side=tk.LEFT)
+        
+        title_label = tk.Label(title_container, text="📝 Назови", 
                               font=('Segoe UI', 24, 'bold'),
                               bg=self.colors['header_bg'],
-                              fg=self.colors['header_text'])
+                              fg=self.colors['primary'],
+                              cursor='hand2')
         title_label.pack(side=tk.LEFT)
         
-        # Статус справа
+        # Подзаголовок
+        subtitle_label = tk.Label(title_container, text="Переименование файлов", 
+                                 font=('Segoe UI', 9),
+                                 bg=self.colors['header_bg'],
+                                 fg=self.colors['text_secondary'])
+        subtitle_label.pack(side=tk.LEFT, padx=(15, 0))
+        
+        # Статус справа в стильной карточке
         status_container = tk.Frame(header_content, bg=self.colors['header_bg'])
         status_container.pack(side=tk.RIGHT)
         
-        self.status_label = tk.Label(status_container, text=f"📊 Файлов: {len(self.files)}", 
-                                     font=('Segoe UI', 12, 'bold'),
-                                     bg=self.colors['header_bg'],
-                                     fg=self.colors['header_text'])
+        # Статус в карточке
+        status_card = tk.Frame(status_container, bg=self.colors['bg_secondary'], 
+                              relief='flat', borderwidth=0)
+        status_card.pack()
+        
+        self.status_label = tk.Label(status_card, text=f"📊 Файлов: {len(self.files)}", 
+                                     font=('Segoe UI', 9, 'bold'),
+                                     bg=self.colors['bg_secondary'],
+                                     fg=self.colors['text_primary'],
+                                     padx=12, pady=6)
         self.status_label.pack()
         
-        # === ОСНОВНОЙ КОНТЕЙНЕР ===
-        main_container = tk.Frame(self.root, bg=self.colors['bg_main'])
-        main_container.pack(fill=tk.BOTH, expand=True, padx=25, pady=25)
+        # === ОСНОВНОЙ КОНТЕЙНЕР С ВКЛАДКАМИ ===
+        # Создаем Notebook для вкладок
+        main_notebook = ttk.Notebook(self.root)
+        main_notebook.pack(fill=tk.BOTH, expand=True, padx=25, pady=25)
+        
+        # Сохраняем ссылку на notebook
+        self.main_notebook = main_notebook
+        
+        # === ВКЛАДКА 1: ОСНОВНОЕ СОДЕРЖИМОЕ (файлы и методы) ===
+        main_tab = tk.Frame(main_notebook, bg=self.colors['bg_main'])
+        main_notebook.add(main_tab, text="📁 Файлы")
+        
+        # Используем PanedWindow для изменения размеров панелей внутри основной вкладки
+        main_container = ttk.PanedWindow(main_tab, orient=tk.HORIZONTAL)
+        main_container.pack(fill=tk.BOTH, expand=True)
+        
+        # Сохраняем ссылку для доступа
+        self.main_paned = main_container
+        
+        # Обработчик изменения размера PanedWindow для обновления колонок таблицы
+        def on_paned_resize(event=None):
+            if hasattr(self, 'update_tree_columns'):
+                self.root.after(100, self.update_tree_columns)
+        
+        main_container.bind('<ButtonRelease-1>', on_paned_resize)  # После перемещения разделителя
+        main_container.bind('<Configure>', on_paned_resize)  # При изменении размера
         
         # Левая часть - список файлов
         left_panel = ttk.LabelFrame(main_container, text="📋 Список файлов", 
                                     style='Card.TLabelframe', padding=20)
-        left_panel.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 20))
+        main_container.add(left_panel, weight=2)  # weight=2 означает, что левая панель будет занимать больше места
         
         
         # Панель управления файлами
         control_panel = tk.Frame(left_panel, bg=self.colors['bg_card'])
-        control_panel.pack(fill=tk.X, pady=(0, 15))
+        control_panel.pack(fill=tk.X, pady=(0, 10))
+        control_panel.columnconfigure(0, weight=1)
+        control_panel.columnconfigure(1, weight=1)
+        control_panel.columnconfigure(2, weight=1)
+        control_panel.columnconfigure(3, weight=1)
         
-        # Кнопки управления - адаптивные с правильным отображением текста (цветные)
-        btn_add_files = tk.Button(control_panel, text="📁 Добавить файлы", 
-                                  command=self.add_files,
-                                  bg=self.colors['primary'],
-                                  fg='white',
-                                  font=('Segoe UI', 10, 'bold'),
-                                  relief='flat',
-                                  borderwidth=0,
-                                  padx=16, pady=10,
-                                  cursor='hand2',
-                                  activebackground=self.colors['primary_hover'],
-                                  activeforeground='white')
-        btn_add_files.pack(side=tk.LEFT, padx=4, fill=tk.X, expand=True)
+        # Кнопки управления - компактный дизайн с закругленными углами
+        btn_add_files = self.create_rounded_button(
+            control_panel, "📁 Добавить файлы", self.add_files,
+            self.colors['primary'], 'white', 
+            font=('Segoe UI', 9, 'bold'), padx=10, pady=6,
+            active_bg=self.colors['primary_hover'])
+        btn_add_files.grid(row=0, column=0, padx=3, sticky="ew")
         
-        btn_add_folder = tk.Button(control_panel, text="📂 Добавить папку", 
-                                   command=self.add_folder,
-                                   bg=self.colors['primary'],
-                                   fg='white',
-                                   font=('Segoe UI', 10, 'bold'),
-                                   relief='flat',
-                                   borderwidth=0,
-                                   padx=16, pady=10,
-                                   cursor='hand2',
-                                   activebackground=self.colors['primary_hover'],
-                                   activeforeground='white')
-        btn_add_folder.pack(side=tk.LEFT, padx=4, fill=tk.X, expand=True)
+        btn_add_folder = self.create_rounded_button(
+            control_panel, "📂 Добавить папку", self.add_folder,
+            self.colors['primary'], 'white',
+            font=('Segoe UI', 9, 'bold'), padx=10, pady=6,
+            active_bg=self.colors['primary_hover'])
+        btn_add_folder.grid(row=0, column=1, padx=3, sticky="ew")
         
-        btn_clear = tk.Button(control_panel, text="🗑️ Очистить", 
-                              command=self.clear_files,
-                              bg=self.colors['danger'],
-                              fg='white',
-                              font=('Segoe UI', 10, 'bold'),
-                              relief='flat',
-                              borderwidth=0,
-                              padx=14, pady=9,
-                              cursor='hand2',
-                              activebackground=self.colors['danger_hover'],
-                              activeforeground='white')
-        btn_clear.pack(side=tk.LEFT, padx=4, fill=tk.X, expand=True)
+        btn_clear = self.create_rounded_button(
+            control_panel, "🗑️ Очистить", self.clear_files,
+            self.colors['danger'], 'white',
+            font=('Segoe UI', 9, 'bold'), padx=10, pady=6,
+            active_bg=self.colors['danger_hover'])
+        btn_clear.grid(row=0, column=2, padx=3, sticky="ew")
         
-        btn_undo = tk.Button(control_panel, text="↶ Отменить", 
-                             command=self.undo_rename,
-                             bg='#818CF8',
-                             fg='white',
-                             font=('Segoe UI', 9, 'bold'),
-                             relief='flat',
-                             borderwidth=0,
-                             padx=14, pady=9,
-                             cursor='hand2',
-                             activebackground='#6366F1',
-                             activeforeground='white')
-        btn_undo.pack(side=tk.LEFT, padx=4, fill=tk.X, expand=True)
+        btn_undo = self.create_rounded_button(
+            control_panel, "↶ Отменить", self.undo_rename,
+            self.colors['primary_light'], 'white',
+            font=('Segoe UI', 9, 'bold'), padx=10, pady=6,
+            active_bg=self.colors['primary'])
+        btn_undo.grid(row=0, column=3, padx=3, sticky="ew")
         
         # Таблица файлов
         list_frame = ttk.Frame(left_panel)
@@ -412,11 +658,18 @@ class FileRenamerApp:
         self.tree.heading("path", text="📁 Путь")
         self.tree.heading("status", text="✓ Статус")
         
-        self.tree.column("old_name", width=220, anchor='w')
-        self.tree.column("new_name", width=220, anchor='w')
-        self.tree.column("extension", width=90, anchor='center')
-        self.tree.column("path", width=300, anchor='w')
-        self.tree.column("status", width=120, anchor='center')
+        # Настройка колонок с адаптивными размерами (процент от ширины)
+        list_frame.update_idletasks()  # Обновляем размеры
+        frame_width = list_frame.winfo_width() if list_frame.winfo_width() > 1 else 800
+        
+        self.tree.column("old_name", width=int(frame_width * 0.22), anchor='w', minwidth=100)
+        self.tree.column("new_name", width=int(frame_width * 0.22), anchor='w', minwidth=100)
+        self.tree.column("extension", width=int(frame_width * 0.10), anchor='center', minwidth=60)
+        self.tree.column("path", width=int(frame_width * 0.35), anchor='w', minwidth=150)
+        self.tree.column("status", width=int(frame_width * 0.11), anchor='center', minwidth=80)
+        
+        # Сохраняем ссылку на list_frame для обновления размеров
+        self.list_frame = list_frame
         
         # Настройка тегов для цветового выделения
         self.tree.tag_configure('ready', background='#D1FAE5')  # Светло-зеленый для готовых
@@ -435,20 +688,53 @@ class FileRenamerApp:
         for col in ("old_name", "new_name", "extension", "path", "status"):
             self.tree.heading(col, command=lambda c=col: self.sort_column(c))
         
-        # === ПАНЕЛЬ МЕТОДОВ ПЕРЕИМЕНОВАНИЯ (справа) ===
+        # === КНОПКИ (под списком файлов слева) ===
+        buttons_frame = tk.Frame(left_panel, bg=self.colors['bg_card'])
+        buttons_frame.pack(fill=tk.X, pady=(10, 10))
+        buttons_frame.columnconfigure(0, weight=1)
+        buttons_frame.columnconfigure(1, weight=1)
+        
+        btn_apply = self.create_rounded_button(
+            buttons_frame, "✨ Применить метод", self.apply_methods,
+            self.colors['primary'], 'white',
+            font=('Segoe UI', 11, 'bold'), padx=15, pady=10,
+            active_bg=self.colors['primary_hover'])
+        btn_apply.grid(row=0, column=0, padx=4, sticky="ew")
+        
+        btn_start = self.create_rounded_button(
+            buttons_frame, "▶️ Начать переименование", self.start_rename,
+            self.colors['success'], 'white',
+            font=('Segoe UI', 11, 'bold'), padx=15, pady=10,
+            active_bg=self.colors['success_hover'])
+        btn_start.grid(row=0, column=1, padx=4, sticky="ew")
+        
+        # === ПРОГРЕСС БАР (под кнопками слева) ===
+        progress_container = tk.Frame(left_panel, bg=self.colors['bg_card'])
+        progress_container.pack(fill=tk.X, pady=(0, 0))
+        
+        progress_label = tk.Label(progress_container, text="Прогресс:", 
+                                 font=('Segoe UI', 9, 'bold'),
+                                 bg=self.colors['bg_card'], fg=self.colors['text_primary'])
+        progress_label.pack(anchor=tk.W, pady=(0, 6))
+        
+        self.progress = ttk.Progressbar(progress_container, mode='determinate')
+        self.progress.pack(fill=tk.X)
+        
+        # === ПРАВАЯ ПАНЕЛЬ (только методы) ===
         right_panel = ttk.LabelFrame(main_container, text="⚙️ Методы переименования", 
-                                     style='Card.TLabelframe', padding=20)
-        right_panel.pack(side=tk.RIGHT, fill=tk.BOTH, padx=(20, 0))
-        right_panel.configure(width=420)
+                                     style='Card.TLabelframe', padding=0)
+        main_container.add(right_panel, weight=1)
+        right_panel.configure(width=350)
         
-        
-        methods_frame = right_panel
+        # Внутренний Frame для содержимого с отступами
+        methods_frame = tk.Frame(right_panel, bg=self.colors['bg_card'])
+        methods_frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=20)
         
         # Выбор метода
         method_label = tk.Label(methods_frame, text="🔧 Выберите метод:", 
-                               font=('Segoe UI', 11, 'bold'),
+                               font=('Segoe UI', 9, 'bold'),
                                bg=self.colors['bg_card'], fg=self.colors['text_primary'])
-        method_label.pack(anchor=tk.W, pady=(0, 10))
+        method_label.pack(anchor=tk.W, pady=(0, 6))
         
         self.method_var = tk.StringVar()
         method_values = [
@@ -461,9 +747,9 @@ class FileRenamerApp:
             values=method_values,
             state="readonly",
             width=30,
-            font=('Segoe UI', 10)
+            font=('Segoe UI', 9)
         )
-        self.method_combo.pack(fill=tk.X, pady=(0, 15))
+        self.method_combo.pack(fill=tk.X, pady=(0, 12))
         self.method_combo.bind("<<ComboboxSelected>>", self.on_method_selected)
         self.method_combo.current(0)  # "Новое имя" по умолчанию
         
@@ -500,51 +786,36 @@ class FileRenamerApp:
         # Кнопки управления методами
         method_buttons_frame = tk.Frame(methods_frame, bg=self.colors['bg_card'])
         method_buttons_frame.pack(fill=tk.X, pady=(0, 15))
+        method_buttons_frame.columnconfigure(0, weight=1)
+        method_buttons_frame.columnconfigure(1, weight=1)
+        method_buttons_frame.columnconfigure(2, weight=1)
         
-        btn_add_method = tk.Button(method_buttons_frame, text="➕ Добавить", 
-                                    command=self.add_method,
-                                    bg=self.colors['primary'],
-                                    fg='white',
-                                    font=('Segoe UI', 10, 'bold'),
-                                    relief='flat',
-                                    borderwidth=0,
-                                    padx=14, pady=9,
-                                    cursor='hand2',
-                                    activebackground=self.colors['primary_hover'],
-                                    activeforeground='white')
-        btn_add_method.pack(side=tk.LEFT, padx=4, fill=tk.X, expand=True)
+        btn_add_method = self.create_rounded_button(
+            method_buttons_frame, "➕ Добавить", self.add_method,
+            self.colors['primary'], 'white',
+            font=('Segoe UI', 9, 'bold'), padx=10, pady=6,
+            active_bg=self.colors['primary_hover'])
+        btn_add_method.grid(row=0, column=0, padx=3, sticky="ew")
         
-        btn_remove_method = tk.Button(method_buttons_frame, text="➖ Удалить", 
-                                       command=self.remove_method,
-                                       bg='#818CF8',
-                                       fg='white',
-                                       font=('Segoe UI', 9, 'bold'),
-                                       relief='flat',
-                                       borderwidth=0,
-                                       padx=14, pady=9,
-                                       cursor='hand2',
-                                       activebackground='#6366F1',
-                                       activeforeground='white')
-        btn_remove_method.pack(side=tk.LEFT, padx=4, fill=tk.X, expand=True)
+        btn_remove_method = self.create_rounded_button(
+            method_buttons_frame, "➖ Удалить", self.remove_method,
+            '#818CF8', 'white',
+            font=('Segoe UI', 9, 'bold'), padx=10, pady=6,
+            active_bg='#6366F1')
+        btn_remove_method.grid(row=0, column=1, padx=3, sticky="ew")
         
-        btn_clear_methods = tk.Button(method_buttons_frame, text="🗑️ Очистить", 
-                                       command=self.clear_methods,
-                                       bg=self.colors['danger'],
-                                       fg='white',
-                                       font=('Segoe UI', 10, 'bold'),
-                                       relief='flat',
-                                       borderwidth=0,
-                                       padx=14, pady=9,
-                                       cursor='hand2',
-                                       activebackground=self.colors['danger_hover'],
-                                       activeforeground='white')
-        btn_clear_methods.pack(side=tk.LEFT, padx=4, fill=tk.X, expand=True)
+        btn_clear_methods = self.create_rounded_button(
+            method_buttons_frame, "🗑️ Очистить", self.clear_methods,
+            self.colors['danger'], 'white',
+            font=('Segoe UI', 9, 'bold'), padx=10, pady=6,
+            active_bg=self.colors['danger_hover'])
+        btn_clear_methods.grid(row=0, column=2, padx=3, sticky="ew")
         
         # Список примененных методов
         applied_label = tk.Label(methods_frame, text="📝 Примененные методы:", 
-                                font=('Segoe UI', 11, 'bold'),
+                                font=('Segoe UI', 9, 'bold'),
                                 bg=self.colors['bg_card'], fg=self.colors['text_primary'])
-        applied_label.pack(anchor=tk.W, pady=(0, 10))
+        applied_label.pack(anchor=tk.W, pady=(0, 6))
         
         listbox_frame = tk.Frame(methods_frame, bg=self.colors['bg_card'], 
                                 relief='flat', borderwidth=1,
@@ -553,7 +824,7 @@ class FileRenamerApp:
         listbox_frame.pack(fill=tk.X, pady=(0, 0))
         
         self.methods_listbox = tk.Listbox(listbox_frame, height=5, 
-                                         font=('Segoe UI', 10),
+                                         font=('Segoe UI', 9),
                                          relief='flat', borderwidth=0,
                                          bg='white', fg=self.colors['text_primary'],
                                          selectbackground=self.colors['primary'],
@@ -561,61 +832,202 @@ class FileRenamerApp:
                                          highlightthickness=0)
         self.methods_listbox.pack(fill=tk.BOTH, expand=True, padx=2, pady=2)
         
-        # === ПАНЕЛЬ ДЕЙСТВИЙ (внизу) ===
-        action_frame = ttk.LabelFrame(self.root, text="🚀 Действия", 
-                                     style='Card.TLabelframe', padding=20)
-        action_frame.pack(fill=tk.X, padx=25, pady=(0, 25))
         
+        # Создаем log_text для логирования (будет использоваться в окне лога)
+        self.log_text = None
         
-        buttons_frame = tk.Frame(action_frame, bg=self.colors['bg_card'])
-        buttons_frame.pack(fill=tk.X, pady=(0, 15))
+        # Инициализация первого метода (Новое имя)
+        self.on_method_selected()
         
-        btn_apply = tk.Button(buttons_frame, text="✨ Применить метод", 
-                              command=self.apply_methods,
-                              bg=self.colors['primary'],
-                              fg='white',
-                              font=('Segoe UI', 10, 'bold'),
-                              relief='flat',
-                              borderwidth=0,
-                              padx=18, pady=11,
-                              cursor='hand2',
-                              activebackground=self.colors['primary_hover'],
-                              activeforeground='white')
-        btn_apply.pack(side=tk.LEFT, padx=8, fill=tk.X, expand=True)
+        # === СОЗДАНИЕ ВКЛАДОК НА ГЛАВНОМ ЭКРАНЕ ===
+        # Создаем вкладки для логов, настроек, о программе и поддержки
+        self._create_main_log_tab()
+        self._create_main_settings_tab()
+        self._create_main_about_tab()
+        self._create_main_support_tab()
+    
+    def open_actions_window(self):
+        """Открытие окна действий"""
+        if self.windows['actions'] is not None and self.windows['actions'].winfo_exists():
+            self.windows['actions'].lift()
+            self.windows['actions'].focus_force()
+            return
         
-        btn_start = tk.Button(buttons_frame, text="▶️ Начать переименование", 
-                              command=self.start_rename,
-                              bg=self.colors['success'],
-                              fg='white',
-                              font=('Segoe UI', 10, 'bold'),
-                              relief='flat',
-                              borderwidth=0,
-                              padx=18, pady=11,
-                              cursor='hand2',
-                              activebackground=self.colors['success_hover'],
-                              activeforeground='white')
-        btn_start.pack(side=tk.LEFT, padx=8, fill=tk.X, expand=True)
+        window = tk.Toplevel(self.root)
+        window.title("🚀 Действия")
+        window.geometry("600x180")
+        window.minsize(500, 150)
+        window.configure(bg=self.colors['bg_card'])
+        
+        # Настройка адаптивности окна
+        window.columnconfigure(0, weight=1)
+        window.rowconfigure(0, weight=1)
+        
+        # Обработчик изменения размера окна
+        def on_actions_window_resize(event):
+            if event.widget == window:
+                try:
+                    # Обновляем размеры кнопок и прогресс-бара
+                    window.update_idletasks()
+                except:
+                    pass
+        
+        window.bind('<Configure>', on_actions_window_resize)
+        
+        self.windows['actions'] = window
+        
+        # Основной контейнер для масштабирования
+        main_frame = tk.Frame(window, bg=self.colors['bg_card'])
+        main_frame.grid(row=0, column=0, sticky="nsew", padx=20, pady=20)
+        main_frame.columnconfigure(0, weight=1)
+        main_frame.rowconfigure(0, weight=1)
+        main_frame.rowconfigure(1, weight=1)
+        
+        # Кнопки действий
+        buttons_frame = tk.Frame(main_frame, bg=self.colors['bg_card'])
+        buttons_frame.grid(row=0, column=0, sticky="ew")
+        buttons_frame.columnconfigure(0, weight=1)
+        buttons_frame.columnconfigure(1, weight=1)
+        
+        btn_apply = self.create_rounded_button(
+            buttons_frame, "✨ Применить метод", self.apply_methods,
+            self.colors['primary'], 'white',
+            font=('Segoe UI', 9, 'bold'), padx=10, pady=6,
+            active_bg=self.colors['primary_hover'])
+        btn_apply.grid(row=0, column=0, sticky="ew", padx=4)
+
+        btn_start = self.create_rounded_button(
+            buttons_frame, "▶️ Начать переименование", self.start_rename,
+            self.colors['success'], 'white',
+            font=('Segoe UI', 9, 'bold'), padx=10, pady=6,
+            active_bg=self.colors['success_hover'])
+        btn_start.grid(row=0, column=1, sticky="ew", padx=4)
         
         # Прогресс бар
-        progress_container = tk.Frame(action_frame, bg=self.colors['bg_card'])
-        progress_container.pack(fill=tk.X, pady=(0, 15))
+        progress_container = tk.Frame(main_frame, bg=self.colors['bg_card'])
+        progress_container.grid(row=1, column=0, sticky="ew", pady=(10, 0))
+        progress_container.columnconfigure(0, weight=1)
         
         progress_label = tk.Label(progress_container, text="Прогресс:", 
-                                 font=('Segoe UI', 10, 'bold'),
-                                 bg=self.colors['bg_card'], fg=self.colors['text_primary'])
-        progress_label.pack(anchor=tk.W, pady=(0, 8))
+                                 font=('Segoe UI', 9, 'bold'),
+                            bg=self.colors['bg_card'], fg=self.colors['text_primary'])
+        progress_label.pack(anchor=tk.W, pady=(0, 6))
         
-        self.progress = ttk.Progressbar(progress_container, mode='determinate')
-        self.progress.pack(fill=tk.X)
+        self.progress_window = ttk.Progressbar(progress_container, mode='determinate')
+        self.progress_window.pack(fill=tk.X)
+        
+        # Обработчик закрытия окна
+        window.protocol("WM_DELETE_WINDOW", lambda: self.close_window('actions'))
+    
+    def open_tabs_window(self, tab_name='log'):
+        """Открытие окна с вкладками (логи, настройки, о программе, поддержка)"""
+        # Если окно уже открыто, переключаемся на нужную вкладку
+        if self.windows['tabs'] is not None and self.windows['tabs'].winfo_exists():
+            self.windows['tabs'].lift()
+            self.windows['tabs'].focus_force()
+            if self.tabs_window_notebook:
+                # Переключаемся на нужную вкладку
+                tab_index_map = {'log': 0, 'settings': 1, 'about': 2, 'support': 3}
+                if tab_name in tab_index_map:
+                    self.tabs_window_notebook.select(tab_index_map[tab_name])
+            return
+        
+        # Создаем новое окно с вкладками
+        window = tk.Toplevel(self.root)
+        window.title("Информация и настройки")
+        window.geometry("800x600")
+        window.minsize(600, 500)
+        window.configure(bg=self.colors['bg_card'])
+        
+        # Настройка адаптивности окна
+        window.columnconfigure(0, weight=1)
+        window.rowconfigure(0, weight=1)
+        
+        self.windows['tabs'] = window
+        
+        # Создаем Notebook для вкладок
+        notebook = ttk.Notebook(window)
+        notebook.grid(row=0, column=0, sticky="nsew", padx=0, pady=0)
+        self.tabs_window_notebook = notebook
+        
+        # Создаем вкладки
+        self._create_log_tab(notebook)
+        self._create_settings_tab(notebook)
+        self._create_about_tab(notebook)
+        self._create_support_tab(notebook)
+        
+        # Переключаемся на нужную вкладку
+        tab_index_map = {'log': 0, 'settings': 1, 'about': 2, 'support': 3}
+        if tab_name in tab_index_map:
+            notebook.select(tab_index_map[tab_name])
+        
+        # Обработчик закрытия окна
+        def on_close():
+            self.log_text = None
+            self.close_window('tabs')
+        
+        window.protocol("WM_DELETE_WINDOW", on_close)
+    
+    def open_log_window(self):
+        """Переключение на вкладку лога операций в главном окне"""
+        if hasattr(self, 'main_notebook') and self.main_notebook:
+            self.main_notebook.select(1)  # Индекс 1 - вкладка лога
+    
+    def open_settings_window(self):
+        """Переключение на вкладку настроек в главном окне"""
+        if hasattr(self, 'main_notebook') and self.main_notebook:
+            self.main_notebook.select(2)  # Индекс 2 - вкладка настроек
+    
+    def open_about_window(self):
+        """Переключение на вкладку о программе в главном окне"""
+        if hasattr(self, 'main_notebook') and self.main_notebook:
+            self.main_notebook.select(3)  # Индекс 3 - вкладка о программе
+    
+    def open_support_window(self):
+        """Переключение на вкладку поддержки в главном окне"""
+        if hasattr(self, 'main_notebook') and self.main_notebook:
+            self.main_notebook.select(4)  # Индекс 4 - вкладка поддержки
+    
+    def _create_main_log_tab(self):
+        """Создание вкладки лога операций на главном экране"""
+        log_tab = tk.Frame(self.main_notebook, bg=self.colors['bg_card'])
+        log_tab.columnconfigure(0, weight=1)
+        log_tab.rowconfigure(1, weight=1)
+        self.main_notebook.add(log_tab, text="📋 Лог операций")
+        
+        # Панель управления логом
+        log_controls = tk.Frame(log_tab, bg=self.colors['bg_card'])
+        log_controls.grid(row=0, column=0, sticky="ew", padx=20, pady=(20, 10))
+        log_controls.columnconfigure(1, weight=1)
+        log_controls.columnconfigure(2, weight=1)
+        
+        # Заголовок
+        log_title = tk.Label(log_controls, text="📋 Лог операций",
+                            font=('Segoe UI', 11, 'bold'),
+                            bg=self.colors['bg_card'],
+                            fg=self.colors['text_primary'])
+        log_title.grid(row=0, column=0, padx=(0, 12), sticky="w")
+        
+        btn_clear_log = self.create_rounded_button(
+            log_controls, "🗑️ Очистить лог", self.clear_log,
+            self.colors['danger'], 'white',
+            font=('Segoe UI', 9, 'bold'), padx=10, pady=6,
+            active_bg=self.colors['danger_hover'])
+        btn_clear_log.grid(row=0, column=1, padx=3, sticky="ew")
+        
+        # Кнопка сохранения лога
+        btn_save_log = self.create_rounded_button(
+            log_controls, "💾 Сохранить лог", self.save_log,
+            self.colors['primary'], 'white',
+            font=('Segoe UI', 9, 'bold'), padx=10, pady=6,
+            active_bg=self.colors['primary_hover'])
+        btn_save_log.grid(row=0, column=2, padx=3, sticky="ew")
         
         # Лог операций
-        log_frame = tk.Frame(action_frame, bg=self.colors['bg_card'])
-        log_frame.pack(fill=tk.BOTH, expand=True)
-        
-        log_label = tk.Label(log_frame, text="📋 Лог операций:", 
-                            font=('Segoe UI', 11, 'bold'),
-                            bg=self.colors['bg_card'], fg=self.colors['text_primary'])
-        log_label.pack(anchor=tk.W, pady=(0, 10))
+        log_frame = tk.Frame(log_tab, bg=self.colors['bg_card'])
+        log_frame.grid(row=1, column=0, sticky="nsew", padx=20, pady=(0, 20))
+        log_frame.columnconfigure(0, weight=1)
+        log_frame.rowconfigure(0, weight=1)
         
         log_container = tk.Frame(log_frame, bg=self.colors['bg_card'], 
                                 relief='flat', borderwidth=1,
@@ -624,49 +1036,924 @@ class FileRenamerApp:
         log_container.pack(fill=tk.BOTH, expand=True)
         
         log_scroll = ttk.Scrollbar(log_container, orient=tk.VERTICAL)
-        self.log_text = tk.Text(log_container, height=8, yscrollcommand=log_scroll.set,
+        log_text_widget = tk.Text(log_container, yscrollcommand=log_scroll.set,
                                font=('Consolas', 10),
                                bg='white', fg=self.colors['text_primary'],
                                relief='flat', borderwidth=0,
                                padx=12, pady=10,
                                wrap=tk.WORD)
-        log_scroll.config(command=self.log_text.yview)
+        log_scroll.config(command=log_text_widget.yview)
         
-        self.log_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        log_text_widget.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         log_scroll.pack(side=tk.RIGHT, fill=tk.Y)
         
-        # Инициализация первого метода (Новое имя)
-        self.on_method_selected()
+        # Сохраняем ссылку на log_text
+        self.log_text = log_text_widget
     
-    def on_window_resize(self, event=None) -> None:
-        """Обработка изменения размера окна.
+    def _create_main_settings_tab(self):
+        """Создание вкладки настроек на главном экране"""
+        settings_tab = tk.Frame(self.main_notebook, bg=self.colors['bg_card'])
+        settings_tab.columnconfigure(0, weight=1)
+        settings_tab.rowconfigure(0, weight=1)
+        self.main_notebook.add(settings_tab, text="⚙️ Настройки")
         
-        Args:
-            event: Событие изменения размера (опционально)
-        """
-        if event and event.widget == self.root:
-            # Обновление размеров колонок таблицы при изменении размера окна
-            try:
-                width = self.root.winfo_width()
-                if width > 100:
-                    # Адаптивная ширина колонок
-                    tree_width = width - 600  # Учитываем правую панель и отступы
-                    if tree_width > 400:
-                        self.tree.column("old_name", width=int(tree_width * 0.3))
-                        self.tree.column("new_name", width=int(tree_width * 0.3))
-                        self.tree.column("path", width=int(tree_width * 0.25))
-            except Exception:
-                pass
+        # Содержимое настроек с прокруткой
+        canvas = tk.Canvas(settings_tab, bg=self.colors['bg_card'], highlightthickness=0)
+        scrollbar = ttk.Scrollbar(settings_tab, orient="vertical", command=canvas.yview)
+        scrollable_frame = tk.Frame(canvas, bg=self.colors['bg_card'])
+        
+        scrollable_frame.bind(
+            "<Configure>",
+            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
+        )
+        
+        canvas_window = canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+        
+        def on_canvas_configure(event):
+            if event.widget == canvas:
+                try:
+                    canvas_width = event.width
+                    canvas.itemconfig(canvas_window, width=canvas_width)
+                except:
+                    pass
+        
+        canvas.bind('<Configure>', on_canvas_configure)
+        def on_window_configure(event):
+            if event.widget == settings_tab:
+                try:
+                    canvas_width = settings_tab.winfo_width() - scrollbar.winfo_width() - 4
+                    canvas.itemconfig(canvas_window, width=max(canvas_width, 100))
+                except:
+                    pass
+        
+        settings_tab.bind('<Configure>', on_window_configure)
+        canvas.configure(yscrollcommand=scrollbar.set)
+        
+        canvas.grid(row=0, column=0, sticky="nsew")
+        scrollbar.grid(row=0, column=1, sticky="ns")
+        settings_tab.rowconfigure(0, weight=1)
+        settings_tab.columnconfigure(0, weight=1)
+        
+        content_frame = scrollable_frame
+        content_frame.columnconfigure(0, weight=1)
+        scrollable_frame.configure(padx=30, pady=30)
+        
+        # Заголовок
+        title_label = tk.Label(content_frame, text="⚙️ Настройки", 
+                              font=('Segoe UI', 20, 'bold'),
+                              bg=self.colors['bg_card'], 
+                              fg=self.colors['text_primary'])
+        title_label.pack(anchor=tk.W, pady=(0, 25))
+        
+        # Секция: Общие настройки
+        general_frame = ttk.LabelFrame(content_frame, text="Общие настройки", 
+                                      style='Card.TLabelframe', padding=15)
+        general_frame.pack(fill=tk.X, pady=(0, 15))
+        
+        # Автоматическое применение методов
+        auto_apply_var = tk.BooleanVar(value=False)
+        auto_apply_check = tk.Checkbutton(general_frame, 
+                                         text="Автоматически применять методы при добавлении",
+                                         variable=auto_apply_var,
+                                         font=('Segoe UI', 10),
+                                         bg=self.colors['bg_card'],
+                                         fg=self.colors['text_primary'],
+                                         selectcolor='white',
+                                         activebackground=self.colors['bg_card'],
+                                         activeforeground=self.colors['text_primary'])
+        auto_apply_check.pack(anchor=tk.W, pady=5)
+        
+        # Показывать предупреждения
+        show_warnings_var = tk.BooleanVar(value=True)
+        show_warnings_check = tk.Checkbutton(general_frame, 
+                                            text="Показывать предупреждения перед переименованием",
+                                            variable=show_warnings_var,
+                                            font=('Segoe UI', 10),
+                                            bg=self.colors['bg_card'],
+                                            fg=self.colors['text_primary'],
+                                            selectcolor='white',
+                                            activebackground=self.colors['bg_card'],
+                                            activeforeground=self.colors['text_primary'])
+        show_warnings_check.pack(anchor=tk.W, pady=5)
+        
+        # Секция: Интерфейс
+        ui_frame = ttk.LabelFrame(content_frame, text="Интерфейс", 
+                                 style='Card.TLabelframe', padding=15)
+        ui_frame.pack(fill=tk.X, pady=(0, 15))
+        
+        # Размер шрифта
+        font_size_label = tk.Label(ui_frame, text="Размер шрифта:",
+                                   font=('Segoe UI', 10, 'bold'),
+                                   bg=self.colors['bg_card'],
+                                   fg=self.colors['text_primary'])
+        font_size_label.pack(anchor=tk.W, pady=(0, 5))
+        
+        font_size_var = tk.StringVar(value="10")
+        font_size_combo = ttk.Combobox(ui_frame, textvariable=font_size_var,
+                                      values=["8", "9", "10", "11", "12"],
+                                      state="readonly", width=10)
+        font_size_combo.pack(anchor=tk.W, pady=(0, 10))
+        
+        # Секция: Файлы
+        files_frame = ttk.LabelFrame(content_frame, text="Работа с файлами", 
+                                    style='Card.TLabelframe', padding=15)
+        files_frame.pack(fill=tk.X, pady=(0, 15))
+        
+        # Резервное копирование
+        backup_var = tk.BooleanVar(value=False)
+        backup_check = tk.Checkbutton(files_frame, 
+                                      text="Создавать резервные копии перед переименованием",
+                                      variable=backup_var,
+                                      font=('Segoe UI', 10),
+                                      bg=self.colors['bg_card'],
+                                      fg=self.colors['text_primary'],
+                                      selectcolor='white',
+                                      activebackground=self.colors['bg_card'],
+                                      activeforeground=self.colors['text_primary'])
+        backup_check.pack(anchor=tk.W, pady=5)
+        
+        # Кнопка сохранения
+        save_btn = self.create_rounded_button(
+            content_frame, "💾 Сохранить настройки",
+            lambda: messagebox.showinfo("Настройки", "Настройки сохранены!"),
+            self.colors['primary'], 'white',
+            font=('Segoe UI', 9, 'bold'), padx=10, pady=6,
+            active_bg=self.colors['primary_hover'])
+        save_btn.pack(pady=(10, 0))
     
-    def switch_tab(self, tab_name):
-        """Переключение вкладок"""
-        self.current_tab.set(tab_name)
-        # Обновление визуального состояния вкладок
-        for name, tab_widget in self.tabs.items():
-            if name == tab_name:
-                tab_widget.config(fg=self.colors['tab_active'])
-            else:
-                tab_widget.config(fg=self.colors['tab_inactive'])
+    def _create_main_about_tab(self):
+        """Создание вкладки о программе на главном экране"""
+        about_tab = tk.Frame(self.main_notebook, bg=self.colors['bg_card'])
+        about_tab.columnconfigure(0, weight=1)
+        about_tab.rowconfigure(0, weight=1)
+        self.main_notebook.add(about_tab, text="ℹ️ О программе")
+        
+        # Содержимое о программе с прокруткой
+        canvas = tk.Canvas(about_tab, bg=self.colors['bg_card'], highlightthickness=0)
+        scrollbar = ttk.Scrollbar(about_tab, orient="vertical", command=canvas.yview)
+        scrollable_frame = tk.Frame(canvas, bg=self.colors['bg_card'])
+        
+        scrollable_frame.bind(
+            "<Configure>",
+            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
+        )
+        
+        canvas_window = canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+        
+        def on_canvas_configure(event):
+            if event.widget == canvas:
+                try:
+                    canvas_width = event.width
+                    canvas.itemconfig(canvas_window, width=canvas_width)
+                except:
+                    pass
+        
+        canvas.bind('<Configure>', on_canvas_configure)
+        def on_window_configure(event):
+            if event.widget == about_tab:
+                try:
+                    canvas_width = about_tab.winfo_width() - scrollbar.winfo_width() - 4
+                    canvas.itemconfig(canvas_window, width=max(canvas_width, 100))
+                except:
+                    pass
+        
+        about_tab.bind('<Configure>', on_window_configure)
+        canvas.configure(yscrollcommand=scrollbar.set)
+        
+        canvas.grid(row=0, column=0, sticky="nsew")
+        scrollbar.grid(row=0, column=1, sticky="ns")
+        about_tab.rowconfigure(0, weight=1)
+        about_tab.columnconfigure(0, weight=1)
+        
+        content_frame = scrollable_frame
+        content_frame.columnconfigure(0, weight=1)
+        scrollable_frame.configure(padx=30, pady=30)
+        
+        # Логотип/Название
+        title_label = tk.Label(content_frame, text="📝 Назови", 
+                              font=('Segoe UI', 32, 'bold'),
+                              bg=self.colors['bg_card'], 
+                              fg=self.colors['primary'])
+        title_label.pack(pady=(10, 5))
+        
+        # Версия
+        version_label = tk.Label(content_frame, 
+                                text="Версия 1.0.0",
+                                font=('Segoe UI', 11),
+                                bg=self.colors['bg_card'], 
+                                fg=self.colors['text_secondary'])
+        version_label.pack(pady=(0, 25))
+        
+        # Описание
+        desc_text = """Программа для удобного переименования файлов
+        
+Возможности:
+• Переименование по различным методам
+• Поддержка метаданных (EXIF, ID3 и др.)
+• Предпросмотр изменений перед применением
+• Drag & Drop для добавления файлов
+• Перестановка файлов в списке
+• Отмена операций
+        
+Используемые технологии:
+• Python 3
+• Tkinter
+• tkinterdnd2"""
+        
+        desc_label = tk.Label(content_frame, 
+                             text=desc_text,
+                             font=('Segoe UI', 10),
+                             bg=self.colors['bg_card'], 
+                             fg=self.colors['text_primary'],
+                             justify=tk.LEFT,
+                             anchor=tk.W)
+        desc_label.pack(fill=tk.BOTH, expand=True, pady=(0, 20))
+        
+        # Разделитель
+        separator = tk.Frame(content_frame, bg=self.colors['border'], height=1)
+        separator.pack(fill=tk.X, pady=10)
+        
+        # Разработчики
+        dev_title = tk.Label(content_frame, 
+                            text="Разработчики:",
+                            font=('Segoe UI', 11, 'bold'),
+                            bg=self.colors['bg_card'], 
+                            fg=self.colors['text_primary'],
+                            justify=tk.LEFT)
+        dev_title.pack(anchor=tk.W, pady=(10, 5))
+        
+        dev_org_label = tk.Label(content_frame, 
+                                text="Urban SOLUTION",
+                                font=('Segoe UI', 10),
+                                bg=self.colors['bg_card'], 
+                                fg=self.colors['text_primary'],
+                                justify=tk.LEFT)
+        dev_org_label.pack(anchor=tk.W, pady=(0, 10))
+        
+        # Разработал
+        dev_by_label = tk.Label(content_frame, 
+                               text="Разработал:",
+                               font=('Segoe UI', 10),
+                               bg=self.colors['bg_card'], 
+                               fg=self.colors['text_primary'],
+                               justify=tk.LEFT)
+        dev_by_label.pack(anchor=tk.W, pady=(0, 5))
+        
+        # Ссылка на профиль разработчика
+        def open_vk_profile(event):
+            import webbrowser
+            webbrowser.open("https://vk.com/vsemirka200")
+        
+        dev_name_label = tk.Label(content_frame, 
+                                 text="Олюшин Владислав Викторович",
+                                 font=('Segoe UI', 10),
+                                 bg=self.colors['bg_card'], 
+                                 fg=self.colors['primary'],
+                                 cursor='hand2',
+                                 justify=tk.LEFT)
+        dev_name_label.pack(anchor=tk.W, pady=(0, 15))
+        dev_name_label.bind("<Button-1>", open_vk_profile)
+        
+        # Разделитель
+        separator2 = tk.Frame(content_frame, bg=self.colors['border'], height=1)
+        separator2.pack(fill=tk.X, pady=10)
+        
+        # Наши соц сети
+        social_title = tk.Label(content_frame, 
+                               text="Наши соц сети:",
+                               font=('Segoe UI', 11, 'bold'),
+                               bg=self.colors['bg_card'], 
+                               fg=self.colors['text_primary'],
+                               justify=tk.LEFT)
+        social_title.pack(anchor=tk.W, pady=(10, 5))
+        
+        def open_vk_social(event):
+            import webbrowser
+            webbrowser.open("https://vk.com/urban_solution")
+        
+        vk_label = tk.Label(content_frame, 
+                           text="ВКонтакте: https://vk.com/urban_solution",
+                           font=('Segoe UI', 10),
+                           bg=self.colors['bg_card'], 
+                           fg=self.colors['primary'],
+                           cursor='hand2',
+                           justify=tk.LEFT)
+        vk_label.pack(anchor=tk.W, pady=(0, 5))
+        vk_label.bind("<Button-1>", open_vk_social)
+        
+        def open_tg_channel(event):
+            import webbrowser
+            webbrowser.open("https://t.me/+n1JeH5DS-HQ2NjYy")
+        
+        tg_label = tk.Label(content_frame, 
+                           text="TG-канал: https://t.me/+n1JeH5DS-HQ2NjYy",
+                           font=('Segoe UI', 10),
+                           bg=self.colors['bg_card'], 
+                           fg=self.colors['primary'],
+                           cursor='hand2',
+                           justify=tk.LEFT)
+        tg_label.pack(anchor=tk.W, pady=(0, 10))
+        tg_label.bind("<Button-1>", open_tg_channel)
+        
+        # Разделитель
+        separator3 = tk.Frame(content_frame, bg=self.colors['border'], height=1)
+        separator3.pack(fill=tk.X, pady=10)
+        
+        # GitHub
+        def open_github(event):
+            import webbrowser
+            webbrowser.open("https://github.com/VseMirka200/nazovi")
+        
+        github_label = tk.Label(content_frame, 
+                               text="GitHub: https://github.com/VseMirka200/nazovi",
+                               font=('Segoe UI', 10),
+                               bg=self.colors['bg_card'], 
+                               fg=self.colors['primary'],
+                               cursor='hand2',
+                               justify=tk.LEFT)
+        github_label.pack(anchor=tk.W, pady=(10, 15))
+        github_label.bind("<Button-1>", open_github)
+        
+        # Разделитель
+        separator4 = tk.Frame(content_frame, bg=self.colors['border'], height=1)
+        separator4.pack(fill=tk.X, pady=10)
+        
+        # Автор
+        author_label = tk.Label(content_frame, 
+                               text="© 2024 Назови. Все права защищены.",
+                               font=('Segoe UI', 9),
+                               bg=self.colors['bg_card'], 
+                               fg=self.colors['text_muted'],
+                               justify=tk.CENTER)
+        author_label.pack(pady=(10, 0))
+    
+    def _create_main_support_tab(self):
+        """Создание вкладки поддержки на главном экране"""
+        support_tab = tk.Frame(self.main_notebook, bg=self.colors['bg_card'])
+        support_tab.columnconfigure(0, weight=1)
+        support_tab.rowconfigure(0, weight=1)
+        self.main_notebook.add(support_tab, text="💝 Поддержать")
+        
+        # Содержимое поддержки с прокруткой
+        canvas = tk.Canvas(support_tab, bg=self.colors['bg_card'], highlightthickness=0)
+        scrollbar = ttk.Scrollbar(support_tab, orient="vertical", command=canvas.yview)
+        scrollable_frame = tk.Frame(canvas, bg=self.colors['bg_card'])
+        
+        scrollable_frame.bind(
+            "<Configure>",
+            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
+        )
+        
+        canvas_window = canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+        
+        def on_canvas_configure(event):
+            if event.widget == canvas:
+                try:
+                    canvas_width = event.width
+                    canvas.itemconfig(canvas_window, width=canvas_width)
+                except:
+                    pass
+        
+        canvas.bind('<Configure>', on_canvas_configure)
+        def on_window_configure(event):
+            if event.widget == support_tab:
+                try:
+                    canvas_width = support_tab.winfo_width() - scrollbar.winfo_width() - 4
+                    canvas.itemconfig(canvas_window, width=max(canvas_width, 100))
+                except:
+                    pass
+        
+        support_tab.bind('<Configure>', on_window_configure)
+        canvas.configure(yscrollcommand=scrollbar.set)
+        
+        canvas.grid(row=0, column=0, sticky="nsew")
+        scrollbar.grid(row=0, column=1, sticky="ns")
+        support_tab.rowconfigure(0, weight=1)
+        support_tab.columnconfigure(0, weight=1)
+        
+        content_frame = scrollable_frame
+        content_frame.columnconfigure(0, weight=1)
+        scrollable_frame.configure(padx=30, pady=30)
+        
+        # Заголовок
+        title_label = tk.Label(content_frame, text="💝 Поддержать проект", 
+                              font=('Segoe UI', 24, 'bold'),
+                              bg=self.colors['bg_card'], 
+                              fg=self.colors['primary'])
+        title_label.pack(pady=(10, 20))
+        
+        # Описание
+        desc_text = """Если вам нравится эта программа и она помогает вам в работе, 
+вы можете поддержать её развитие!
+
+Ваша поддержка поможет:
+• Добавлять новые функции
+• Улучшать существующие возможности
+• Исправлять ошибки
+• Поддерживать проект активным
+
+Способы поддержки:"""
+        
+        desc_label = tk.Label(content_frame, 
+                             text=desc_text,
+                             font=('Segoe UI', 10),
+                             bg=self.colors['bg_card'], 
+                             fg=self.colors['text_primary'],
+                             justify=tk.LEFT)
+        desc_label.pack(anchor=tk.W, pady=(0, 20))
+        
+        # Способы поддержки
+        support_frame = tk.Frame(content_frame, bg=self.colors['bg_card'])
+        support_frame.pack(fill=tk.X, pady=(0, 20))
+        
+        support_methods = [
+            ("⭐", "Оставить отзыв и оценку"),
+            ("🐛", "Сообщить об ошибках"),
+            ("💡", "Предложить новые функции"),
+            ("📢", "Рассказать друзьям о программе")
+        ]
+        
+        for icon, text in support_methods:
+            method_frame = tk.Frame(support_frame, bg=self.colors['bg_card'])
+            method_frame.pack(fill=tk.X, pady=8)
+            
+            icon_label = tk.Label(method_frame, text=icon,
+                                 font=('Segoe UI', 16),
+                                 bg=self.colors['bg_card'],
+                                 fg=self.colors['primary'])
+            icon_label.pack(side=tk.LEFT, padx=(0, 10))
+            
+            text_label = tk.Label(method_frame, text=text,
+                                 font=('Segoe UI', 10),
+                                 bg=self.colors['bg_card'],
+                                 fg=self.colors['text_primary'])
+            text_label.pack(side=tk.LEFT)
+        
+        # Разделитель
+        separator = tk.Frame(content_frame, bg=self.colors['border'], height=1)
+        separator.pack(fill=tk.X, pady=15)
+        
+        # Донат
+        def open_donation(event):
+            import webbrowser
+            webbrowser.open("https://pay.cloudtips.ru/p/1fa22ea5")
+        
+        donation_title = tk.Label(content_frame, 
+                                 text="💰 Финансовая поддержка:",
+                                 font=('Segoe UI', 11, 'bold'),
+                                 bg=self.colors['bg_card'], 
+                                 fg=self.colors['text_primary'],
+                                 justify=tk.LEFT)
+        donation_title.pack(anchor=tk.W, pady=(10, 5))
+        
+        donation_label = tk.Label(content_frame, 
+                                 text="Поддержать проект: https://pay.cloudtips.ru/p/1fa22ea5",
+                                 font=('Segoe UI', 10),
+                                 bg=self.colors['bg_card'], 
+                                 fg=self.colors['primary'],
+                                 cursor='hand2',
+                                 justify=tk.LEFT)
+        donation_label.pack(anchor=tk.W, pady=(0, 15))
+        donation_label.bind("<Button-1>", open_donation)
+        
+        # Разделитель
+        separator2 = tk.Frame(content_frame, bg=self.colors['border'], height=1)
+        separator2.pack(fill=tk.X, pady=15)
+        
+        # Благодарность
+        thanks_label = tk.Label(content_frame, 
+                               text="Спасибо за использование программы! 🙏",
+                            font=('Segoe UI', 11, 'bold'),
+                               bg=self.colors['bg_card'], 
+                               fg=self.colors['text_secondary'],
+                               justify=tk.CENTER)
+        thanks_label.pack(pady=(10, 0))
+    
+    def _create_log_tab(self, notebook):
+        """Создание вкладки лога операций"""
+        # Фрейм для вкладки лога
+        log_tab = tk.Frame(notebook, bg=self.colors['bg_card'])
+        log_tab.columnconfigure(0, weight=1)
+        log_tab.rowconfigure(1, weight=1)
+        notebook.add(log_tab, text="📋 Лог операций")
+        
+        # Панель управления логом
+        log_controls = tk.Frame(log_tab, bg=self.colors['bg_card'])
+        log_controls.grid(row=0, column=0, sticky="ew", padx=20, pady=(20, 10))
+        log_controls.columnconfigure(1, weight=1)
+        log_controls.columnconfigure(2, weight=1)
+        
+        # Заголовок
+        log_title = tk.Label(log_controls, text="📋 Лог операций",
+                            font=('Segoe UI', 11, 'bold'),
+                            bg=self.colors['bg_card'],
+                            fg=self.colors['text_primary'])
+        log_title.grid(row=0, column=0, padx=(0, 12), sticky="w")
+        
+        btn_clear_log = self.create_rounded_button(
+            log_controls, "🗑️ Очистить лог", self.clear_log,
+            self.colors['danger'], 'white',
+            font=('Segoe UI', 9, 'bold'), padx=10, pady=6,
+            active_bg=self.colors['danger_hover'])
+        btn_clear_log.grid(row=0, column=1, padx=3, sticky="ew")
+        
+        # Кнопка сохранения лога
+        btn_save_log = self.create_rounded_button(
+            log_controls, "💾 Сохранить лог", self.save_log,
+            self.colors['primary'], 'white',
+            font=('Segoe UI', 9, 'bold'), padx=10, pady=6,
+            active_bg=self.colors['primary_hover'])
+        btn_save_log.grid(row=0, column=2, padx=3, sticky="ew")
+        
+        # Лог операций
+        log_frame = tk.Frame(log_tab, bg=self.colors['bg_card'])
+        log_frame.grid(row=1, column=0, sticky="nsew", padx=20, pady=(0, 20))
+        log_frame.columnconfigure(0, weight=1)
+        log_frame.rowconfigure(0, weight=1)
+        
+        log_container = tk.Frame(log_frame, bg=self.colors['bg_card'], 
+                                relief='flat', borderwidth=1,
+                                highlightbackground=self.colors['border'],
+                                highlightthickness=1)
+        log_container.pack(fill=tk.BOTH, expand=True)
+        
+        log_scroll = ttk.Scrollbar(log_container, orient=tk.VERTICAL)
+        log_text_widget = tk.Text(log_container, yscrollcommand=log_scroll.set,
+                               font=('Consolas', 10),
+                               bg='white', fg=self.colors['text_primary'],
+                               relief='flat', borderwidth=0,
+                               padx=12, pady=10,
+                               wrap=tk.WORD)
+        log_scroll.config(command=log_text_widget.yview)
+        
+        log_text_widget.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        log_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        
+        # Сохраняем ссылку на log_text
+        self.log_text = log_text_widget
+    
+    def _create_settings_tab(self, notebook):
+        """Создание вкладки настроек"""
+        # Фрейм для вкладки настроек
+        settings_tab = tk.Frame(notebook, bg=self.colors['bg_card'])
+        settings_tab.columnconfigure(0, weight=1)
+        settings_tab.rowconfigure(0, weight=1)
+        notebook.add(settings_tab, text="⚙️ Настройки")
+        
+        # Содержимое настроек с прокруткой
+        canvas = tk.Canvas(settings_tab, bg=self.colors['bg_card'], highlightthickness=0)
+        scrollbar = ttk.Scrollbar(settings_tab, orient="vertical", command=canvas.yview)
+        scrollable_frame = tk.Frame(canvas, bg=self.colors['bg_card'])
+        
+        scrollable_frame.bind(
+            "<Configure>",
+            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
+        )
+        
+        canvas_window = canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+    
+        def on_canvas_configure(event):
+            if event.widget == canvas:
+                try:
+                    canvas_width = event.width
+                    canvas.itemconfig(canvas_window, width=canvas_width)
+                except:
+                    pass
+        
+        canvas.bind('<Configure>', on_canvas_configure)
+        def on_window_configure(event):
+            if event.widget == settings_tab:
+                try:
+                    canvas_width = settings_tab.winfo_width() - scrollbar.winfo_width() - 4
+                    canvas.itemconfig(canvas_window, width=max(canvas_width, 100))
+                except:
+                    pass
+        
+        settings_tab.bind('<Configure>', on_window_configure)
+        canvas.configure(yscrollcommand=scrollbar.set)
+        
+        canvas.grid(row=0, column=0, sticky="nsew")
+        scrollbar.grid(row=0, column=1, sticky="ns")
+        settings_tab.rowconfigure(0, weight=1)
+        settings_tab.columnconfigure(0, weight=1)
+        
+        content_frame = scrollable_frame
+        content_frame.columnconfigure(0, weight=1)
+        scrollable_frame.configure(padx=30, pady=30)
+        
+        # Заголовок
+        title_label = tk.Label(content_frame, text="⚙️ Настройки", 
+                              font=('Segoe UI', 20, 'bold'),
+                              bg=self.colors['bg_card'], 
+                              fg=self.colors['text_primary'])
+        title_label.pack(anchor=tk.W, pady=(0, 25))
+        
+        # Секция: Общие настройки
+        general_frame = ttk.LabelFrame(content_frame, text="Общие настройки", 
+                                      style='Card.TLabelframe', padding=15)
+        general_frame.pack(fill=tk.X, pady=(0, 15))
+        
+        # Автоматическое применение методов
+        auto_apply_var = tk.BooleanVar(value=False)
+        auto_apply_check = tk.Checkbutton(general_frame, 
+                                         text="Автоматически применять методы при добавлении",
+                                         variable=auto_apply_var,
+                                         font=('Segoe UI', 10),
+                                         bg=self.colors['bg_card'],
+                                         fg=self.colors['text_primary'],
+                                         selectcolor='white',
+                                         activebackground=self.colors['bg_card'],
+                                         activeforeground=self.colors['text_primary'])
+        auto_apply_check.pack(anchor=tk.W, pady=5)
+        
+        # Показывать предупреждения
+        show_warnings_var = tk.BooleanVar(value=True)
+        show_warnings_check = tk.Checkbutton(general_frame, 
+                                            text="Показывать предупреждения перед переименованием",
+                                            variable=show_warnings_var,
+                                            font=('Segoe UI', 10),
+                                            bg=self.colors['bg_card'],
+                                            fg=self.colors['text_primary'],
+                                            selectcolor='white',
+                                            activebackground=self.colors['bg_card'],
+                                            activeforeground=self.colors['text_primary'])
+        show_warnings_check.pack(anchor=tk.W, pady=5)
+        
+        # Секция: Интерфейс
+        ui_frame = ttk.LabelFrame(content_frame, text="Интерфейс", 
+                                 style='Card.TLabelframe', padding=15)
+        ui_frame.pack(fill=tk.X, pady=(0, 15))
+        
+        # Размер шрифта
+        font_size_label = tk.Label(ui_frame, text="Размер шрифта:",
+                                   font=('Segoe UI', 10, 'bold'),
+                                   bg=self.colors['bg_card'],
+                                   fg=self.colors['text_primary'])
+        font_size_label.pack(anchor=tk.W, pady=(0, 5))
+        
+        font_size_var = tk.StringVar(value="10")
+        font_size_combo = ttk.Combobox(ui_frame, textvariable=font_size_var,
+                                      values=["8", "9", "10", "11", "12"],
+                                      state="readonly", width=10)
+        font_size_combo.pack(anchor=tk.W, pady=(0, 10))
+        
+        # Секция: Файлы
+        files_frame = ttk.LabelFrame(content_frame, text="Работа с файлами", 
+                                    style='Card.TLabelframe', padding=15)
+        files_frame.pack(fill=tk.X, pady=(0, 15))
+        
+        # Резервное копирование
+        backup_var = tk.BooleanVar(value=False)
+        backup_check = tk.Checkbutton(files_frame, 
+                                      text="Создавать резервные копии перед переименованием",
+                                      variable=backup_var,
+                                      font=('Segoe UI', 10),
+                                      bg=self.colors['bg_card'],
+                                      fg=self.colors['text_primary'],
+                                      selectcolor='white',
+                                      activebackground=self.colors['bg_card'],
+                                      activeforeground=self.colors['text_primary'])
+        backup_check.pack(anchor=tk.W, pady=5)
+        
+        # Кнопка сохранения
+        save_btn = self.create_rounded_button(
+            content_frame, "💾 Сохранить настройки",
+            lambda: messagebox.showinfo("Настройки", "Настройки сохранены!"),
+            self.colors['primary'], 'white',
+            font=('Segoe UI', 9, 'bold'), padx=10, pady=6,
+            active_bg=self.colors['primary_hover'])
+        save_btn.pack(pady=(10, 0))
+    
+    def _create_about_tab(self, notebook):
+        """Создание вкладки о программе"""
+        # Фрейм для вкладки о программе
+        about_tab = tk.Frame(notebook, bg=self.colors['bg_card'])
+        about_tab.columnconfigure(0, weight=1)
+        about_tab.rowconfigure(0, weight=1)
+        notebook.add(about_tab, text="ℹ️ О программе")
+        
+        # Содержимое о программе с прокруткой
+        canvas = tk.Canvas(about_tab, bg=self.colors['bg_card'], highlightthickness=0)
+        scrollbar = ttk.Scrollbar(about_tab, orient="vertical", command=canvas.yview)
+        scrollable_frame = tk.Frame(canvas, bg=self.colors['bg_card'])
+        
+        scrollable_frame.bind(
+            "<Configure>",
+            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
+        )
+        
+        canvas_window = canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+        
+        def on_canvas_configure(event):
+            if event.widget == canvas:
+                try:
+                    canvas_width = event.width
+                    canvas.itemconfig(canvas_window, width=canvas_width)
+                except:
+                    pass
+        
+        canvas.bind('<Configure>', on_canvas_configure)
+        def on_window_configure(event):
+            if event.widget == about_tab:
+                try:
+                    canvas_width = about_tab.winfo_width() - scrollbar.winfo_width() - 4
+                    canvas.itemconfig(canvas_window, width=max(canvas_width, 100))
+                except:
+                    pass
+        
+        about_tab.bind('<Configure>', on_window_configure)
+        canvas.configure(yscrollcommand=scrollbar.set)
+        
+        canvas.grid(row=0, column=0, sticky="nsew")
+        scrollbar.grid(row=0, column=1, sticky="ns")
+        about_tab.rowconfigure(0, weight=1)
+        about_tab.columnconfigure(0, weight=1)
+        
+        content_frame = scrollable_frame
+        content_frame.columnconfigure(0, weight=1)
+        scrollable_frame.configure(padx=30, pady=30)
+        
+        # Логотип/Название
+        title_label = tk.Label(content_frame, text="📝 Назови", 
+                              font=('Segoe UI', 32, 'bold'),
+                              bg=self.colors['bg_card'], 
+                              fg=self.colors['primary'])
+        title_label.pack(pady=(10, 5))
+        
+        # Версия
+        version_label = tk.Label(content_frame, 
+                                text="Версия 1.0.0",
+                                font=('Segoe UI', 11),
+                                bg=self.colors['bg_card'], 
+                                fg=self.colors['text_secondary'])
+        version_label.pack(pady=(0, 25))
+        
+        # Описание
+        desc_text = """Программа для удобного переименования файлов
+        
+Возможности:
+• Переименование по различным методам
+• Поддержка метаданных (EXIF, ID3 и др.)
+• Предпросмотр изменений перед применением
+• Drag & Drop для добавления файлов
+• Перестановка файлов в списке
+• Отмена операций
+        
+Используемые технологии:
+• Python 3
+• Tkinter
+• tkinterdnd2"""
+        
+        desc_label = tk.Label(content_frame, 
+                             text=desc_text,
+                             font=('Segoe UI', 10),
+                             bg=self.colors['bg_card'], 
+                             fg=self.colors['text_primary'],
+                             justify=tk.LEFT,
+                             anchor=tk.W)
+        desc_label.pack(fill=tk.BOTH, expand=True, pady=(0, 20))
+        
+        # Разделитель
+        separator = tk.Frame(content_frame, bg=self.colors['border'], height=1)
+        separator.pack(fill=tk.X, pady=10)
+        
+        # Автор
+        author_label = tk.Label(content_frame, 
+                               text="© 2024 Назови. Все права защищены.",
+                               font=('Segoe UI', 9),
+                               bg=self.colors['bg_card'], 
+                               fg=self.colors['text_muted'],
+                               justify=tk.CENTER)
+        author_label.pack(pady=(10, 0))
+    
+    def _create_support_tab(self, notebook):
+        """Создание вкладки поддержки"""
+        # Фрейм для вкладки поддержки
+        support_tab = tk.Frame(notebook, bg=self.colors['bg_card'])
+        support_tab.columnconfigure(0, weight=1)
+        support_tab.rowconfigure(0, weight=1)
+        notebook.add(support_tab, text="💝 Поддержать")
+        
+        # Содержимое поддержки с прокруткой
+        canvas = tk.Canvas(support_tab, bg=self.colors['bg_card'], highlightthickness=0)
+        scrollbar = ttk.Scrollbar(support_tab, orient="vertical", command=canvas.yview)
+        scrollable_frame = tk.Frame(canvas, bg=self.colors['bg_card'])
+        
+        scrollable_frame.bind(
+            "<Configure>",
+            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
+        )
+        
+        canvas_window = canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+        
+        def on_canvas_configure(event):
+            if event.widget == canvas:
+                try:
+                    canvas_width = event.width
+                    canvas.itemconfig(canvas_window, width=canvas_width)
+                except:
+                    pass
+        
+        canvas.bind('<Configure>', on_canvas_configure)
+        def on_window_configure(event):
+            if event.widget == support_tab:
+                try:
+                    canvas_width = support_tab.winfo_width() - scrollbar.winfo_width() - 4
+                    canvas.itemconfig(canvas_window, width=max(canvas_width, 100))
+                except:
+                    pass
+    
+        support_tab.bind('<Configure>', on_window_configure)
+        canvas.configure(yscrollcommand=scrollbar.set)
+        
+        canvas.grid(row=0, column=0, sticky="nsew")
+        scrollbar.grid(row=0, column=1, sticky="ns")
+        support_tab.rowconfigure(0, weight=1)
+        support_tab.columnconfigure(0, weight=1)
+        
+        content_frame = scrollable_frame
+        content_frame.columnconfigure(0, weight=1)
+        scrollable_frame.configure(padx=30, pady=30)
+        
+        # Заголовок
+        title_label = tk.Label(content_frame, text="💝 Поддержать проект", 
+                              font=('Segoe UI', 24, 'bold'),
+                              bg=self.colors['bg_card'], 
+                              fg=self.colors['primary'])
+        title_label.pack(pady=(10, 20))
+        
+        # Описание
+        desc_text = """Если вам нравится эта программа и она помогает вам в работе, 
+вы можете поддержать её развитие!
+
+Ваша поддержка поможет:
+• Добавлять новые функции
+• Улучшать существующие возможности
+• Исправлять ошибки
+• Поддерживать проект активным
+
+Способы поддержки:"""
+        
+        desc_label = tk.Label(content_frame, 
+                             text=desc_text,
+                             font=('Segoe UI', 10),
+                             bg=self.colors['bg_card'], 
+                             fg=self.colors['text_primary'],
+                             justify=tk.LEFT)
+        desc_label.pack(anchor=tk.W, pady=(0, 20))
+        
+        # Способы поддержки
+        support_frame = tk.Frame(content_frame, bg=self.colors['bg_card'])
+        support_frame.pack(fill=tk.X, pady=(0, 20))
+        
+        support_methods = [
+            ("⭐", "Оставить отзыв и оценку"),
+            ("🐛", "Сообщить об ошибках"),
+            ("💡", "Предложить новые функции"),
+            ("📢", "Рассказать друзьям о программе")
+        ]
+        
+        for icon, text in support_methods:
+            method_frame = tk.Frame(support_frame, bg=self.colors['bg_card'])
+            method_frame.pack(fill=tk.X, pady=8)
+            
+            icon_label = tk.Label(method_frame, text=icon,
+                                 font=('Segoe UI', 16),
+                                 bg=self.colors['bg_card'],
+                                 fg=self.colors['primary'])
+            icon_label.pack(side=tk.LEFT, padx=(0, 10))
+            
+            text_label = tk.Label(method_frame, text=text,
+                                 font=('Segoe UI', 10),
+                                 bg=self.colors['bg_card'],
+                                 fg=self.colors['text_primary'])
+            text_label.pack(side=tk.LEFT)
+        
+        # Разделитель
+        separator = tk.Frame(content_frame, bg=self.colors['border'], height=1)
+        separator.pack(fill=tk.X, pady=15)
+        
+        # Благодарность
+        thanks_label = tk.Label(content_frame, 
+                               text="Спасибо за использование программы! 🙏",
+                               font=('Segoe UI', 11, 'bold'),
+                               bg=self.colors['bg_card'], 
+                               fg=self.colors['text_secondary'],
+                               justify=tk.CENTER)
+        thanks_label.pack(pady=(10, 0))
+    
+    def close_window(self, window_name: str):
+        """Закрытие окна"""
+        if window_name in self.windows and self.windows[window_name] is not None:
+            if window_name == 'tabs':
+                # Сохраняем log_text для логирования
+                self.log_text = None
+            try:
+                self.windows[window_name].destroy()
+            except:
+                pass
+            self.windows[window_name] = None
+    
     
     def setup_hotkeys(self):
         """Настройка горячих клавиш"""
@@ -675,11 +1962,410 @@ class FileRenamerApp:
         self.root.bind('<Delete>', lambda e: self.delete_selected())
         self.root.bind('<Control-o>', lambda e: self.add_folder())
     
+    def setup_drag_drop(self):
+        """Настройка drag and drop для файлов из проводника"""
+        # Используем tkinterdnd2 если доступно
+        if HAS_TKINTERDND2:
+            try:
+                # Регистрируем окно как цель для перетаскивания файлов
+                self.root.drop_target_register(DND_FILES)
+                self.root.dnd_bind('<<Drop>>', self._on_drop_files)
+                
+                # Также регистрируем таблицу для перетаскивания файлов
+                self.tree.drop_target_register(DND_FILES)
+                self.tree.dnd_bind('<<Drop>>', self._on_drop_files)
+                
+                # Регистрируем левую панель (где находится таблица)
+                # Получаем родительский фрейм таблицы
+                try:
+                    left_panel = self.tree.master.master if hasattr(self.tree.master, 'master') else self.tree.master
+                    if hasattr(left_panel, 'drop_target_register'):
+                        left_panel.drop_target_register(DND_FILES)
+                        left_panel.dnd_bind('<<Drop>>', self._on_drop_files)
+                except:
+                    pass  # Если не получилось, не критично
+                
+                # Логируем успешную настройку (только при первом запуске)
+                if not hasattr(self, '_drag_drop_logged'):
+                    msg = "✅ Drag and drop файлов включен - можно перетаскивать файлы из проводника"
+                    print(f"DEBUG: {msg}")
+                    self.log(msg)
+                    self._drag_drop_logged = True
+                return
+            except Exception as e:
+                error_msg = f"Ошибка настройки drag and drop (tkinterdnd2): {e}"
+                print(f"DEBUG ERROR: {error_msg}")
+                import traceback
+                print(traceback.format_exc())
+                self.log(error_msg)
+        
+        # Используем Windows API как резервный вариант - отключаем для избежания ошибок
+        # Полный перехват WindowProc может вызывать проблемы, лучше использовать tkinterdnd2
+        if sys.platform == 'win32' and has_dragdrop and False:  # Отключено для стабильности
+            try:
+                self._setup_windows_drag_drop()
+                if not hasattr(self, '_drag_drop_logged'):
+                    self.log("✅ Drag and drop файлов включен через Windows API")
+                    self.log("💡 Перетащите файлы из проводника в окно программы")
+                    self._drag_drop_logged = True
+                return
+            except Exception as e:
+                import traceback
+                error_msg = str(e)
+                error_trace = traceback.format_exc()
+                if not hasattr(self, '_drag_drop_logged'):
+                    self.log(f"⚠️ Не удалось включить drag and drop: {error_msg}")
+                    self.log("💡 Установите библиотеку: pip install tkinterdnd2")
+                    # Логируем полную ошибку для отладки
+                    print(f"Ошибка drag and drop:\n{error_trace}")
+                    self._drag_drop_logged = True
+        
+        # Если ничего не сработало
+        if not hasattr(self, '_drag_drop_logged'):
+            self.log("⚠️ Перетаскивание файлов из проводника недоступно")
+            self.log("💡 Для включения установите: pip install tkinterdnd2")
+            self.log("💡 Перестановка файлов в таблице доступна - перетащите строку мышью")
+            self._drag_drop_logged = True
+    
+    def _setup_windows_drag_drop(self):
+        """Настройка drag and drop через Windows API"""
+        # Эта функция оставлена для совместимости, но не используется
+        # для избежания проблем с перехватом WindowProc
+        # Для полной поддержки drag-and-drop рекомендуется установить tkinterdnd2
+        pass
+    
+    def _on_drop_files(self, event):
+        """Обработка события перетаскивания файлов"""
+        # Сразу выводим в консоль для отладки
+        print("=== DRAG AND DROP EVENT TRIGGERED ===")
+        
+        try:
+            # Получаем данные из события
+            data = event.data
+            print(f"Event data received: {type(data)}, length: {len(data) if data else 0}")
+            
+            # tkinterdnd2 на Windows возвращает файлы в формате: {file1} {file2} {file3}
+            # Где каждый файл заключен в фигурные скобки
+            processed_files = []
+            
+            # Логируем исходные данные для отладки
+            if data:
+                data_preview = data[:200] + ("..." if len(data) > 200 else "")
+                log_msg = f"Получено данных: {len(data)} символов"
+                print(f"DEBUG: {log_msg}")
+                self.log(log_msg)
+                self.log(f"Начало данных: {data_preview}")
+            else:
+                error_msg = "⚠️ Данные не получены из события перетаскивания"
+                print(f"DEBUG: {error_msg}")
+                self.log(error_msg)
+                return
+            
+            # Разбираем по фигурным скобкам (стандартный формат tkinterdnd2)
+            # Формат: {C:\path\file1.ext} {C:\path\file2.ext} ...
+            file_paths = []
+            
+            # Используем более надёжный метод разбора путей
+            import re
+            
+            # Метод 1: Ищем все паттерны {путь} - основной формат tkinterdnd2
+            # Используем нежадное совпадение, чтобы правильно обрабатывать множественные пути
+            pattern = r'\{([^}]+)\}'
+            matches = re.findall(pattern, data)
+            
+            if matches:
+                # Найдены пути в фигурных скобках - это основной формат tkinterdnd2
+                file_paths = [match.strip() for match in matches if match.strip()]
+                self.log(f"Найдено путей в фигурных скобках: {len(file_paths)}")
+            else:
+                # Метод 2: Если нет фигурных скобок, пробуем другие форматы
+                if data.strip():
+                    # Убираем внешние кавычки, если есть
+                    data_clean = data.strip().strip('"').strip("'")
+                    
+                    # Проверяем, является ли это одним существующим путем
+                    if os.path.exists(data_clean):
+                        file_paths = [data_clean]
+                        self.log("Найден один путь без скобок")
+                    else:
+                        # Метод 3: Пробуем разделить по пробелам (может не сработать для путей с пробелами)
+                        parts = data.split()
+                        for part in parts:
+                            part_clean = part.strip('"').strip("'").strip('{}')
+                            if part_clean and (os.path.exists(part_clean) or os.path.isfile(part_clean)):
+                                file_paths.append(part_clean)
+            
+            # Метод 4: Если всё ещё пусто, пробуем как один файл (может быть путь с пробелами без скобок)
+            if not file_paths and data.strip():
+                data_clean = data.strip().strip('"').strip("'").strip('{}')
+                if data_clean:
+                    file_paths = [data_clean]
+                    self.log("Пробую как один путь")
+            
+            self.log(f"Всего найдено путей для обработки: {len(file_paths)}")
+            
+            # Обрабатываем каждый путь
+            skipped_count = 0
+            files_found = 0
+            folders_found = 0
+            
+            for i, file_path in enumerate(file_paths):
+                # Очищаем путь от лишних символов
+                original_path = file_path
+                file_path = file_path.strip('{}').strip('"').strip("'").strip()
+                
+                if not file_path:
+                    skipped_count += 1
+                    continue
+                
+                # Нормализуем путь (преобразуем в абсолютный и стандартизируем)
+                try:
+                    if not os.path.isabs(file_path):
+                        # Если относительный путь, пробуем преобразовать
+                        file_path = os.path.abspath(file_path)
+                    else:
+                        file_path = os.path.normpath(file_path)
+                except Exception as e:
+                    self.log(f"⚠️ Ошибка нормализации пути '{original_path}': {e}")
+                    skipped_count += 1
+                    continue
+                
+                # Проверяем существование
+                if os.path.exists(file_path):
+                    if os.path.isfile(file_path):
+                        processed_files.append(file_path)
+                        files_found += 1
+                    elif os.path.isdir(file_path):
+                        # Если папка, добавляем все файлы рекурсивно
+                        folder_file_count = 0
+                        try:
+                            for root, dirs, filenames in os.walk(file_path):
+                                for filename in filenames:
+                                    full_path = os.path.join(root, filename)
+                                    processed_files.append(full_path)
+                                    folder_file_count += 1
+                            folders_found += 1
+                            self.log(f"✓ Из папки '{os.path.basename(file_path)}' найдено: {folder_file_count} файлов")
+                        except Exception as e:
+                            self.log(f"⚠️ Ошибка при обработке папки '{file_path}': {e}")
+                else:
+                    # Логируем несуществующие пути
+                    skipped_count += 1
+                    self.log(f"⚠️ Путь не найден: {file_path}")
+            
+            # Выводим итоговую статистику
+            if skipped_count > 0:
+                self.log(f"⚠️ Пропущено несуществующих/ошибочных путей: {skipped_count}")
+            
+            if files_found > 0:
+                self.log(f"✓ Найдено файлов: {files_found}")
+            if folders_found > 0:
+                self.log(f"✓ Обработано папок: {folders_found}")
+            
+            self.log(f"✓ Всего файлов готово к добавлению: {len(processed_files)}")
+            
+            if processed_files:
+                self._process_dropped_files(processed_files)
+            else:
+                self.log("⚠️ Не найдено файлов для добавления. Проверьте пути в логе выше.")
+                
+        except Exception as e:
+            import traceback
+            error_msg = str(e)
+            self.log(f"❌ Ошибка при обработке перетащенных файлов: {error_msg}")
+            print(f"Ошибка drag and drop:\n{traceback.format_exc()}")
+    
+    def _process_dropped_files(self, files):
+        """Обработка перетащенных файлов"""
+        print(f"DEBUG: _process_dropped_files вызван с {len(files)} файлами")
+        
+        if not files:
+            self.log("⚠️ Список файлов пуст")
+            return
+        
+        count = 0
+        skipped = 0
+        for file_path in files:
+            if os.path.isfile(file_path):
+                self.add_file(file_path)
+                count += 1
+            else:
+                skipped += 1
+                self.log(f"⚠️ Пропущен (не файл): {file_path}")
+        
+        if count > 0:
+            self.update_status()
+            msg = f"✅ Добавлено файлов перетаскиванием: {count}"
+            if skipped > 0:
+                msg += f" (пропущено: {skipped})"
+            print(f"DEBUG: {msg}")
+            self.log(msg)
+        else:
+            msg = "⚠️ Не удалось добавить файлы"
+            print(f"DEBUG: {msg}")
+            self.log(msg)
+    
+    def setup_treeview_drag_drop(self):
+        """Настройка drag and drop для перестановки файлов в таблице"""
+        # Переменные для отслеживания перетаскивания
+        self.drag_item = None
+        self.drag_start_index = None
+        self.drag_start_y = None
+        self.is_dragging = False
+        
+        # Привязка событий для drag and drop внутри таблицы
+        # Используем отдельные привязки, чтобы не конфликтовать с обычным кликом
+        self.tree.bind('<Button-1>', self.on_treeview_button_press, add='+')
+        self.tree.bind('<B1-Motion>', self.on_treeview_drag_motion, add='+')
+        self.tree.bind('<ButtonRelease-1>', self.on_treeview_drag_release, add='+')
+    
+    def on_treeview_button_press(self, event):
+        """Начало нажатия кнопки мыши (определяем начало перетаскивания)"""
+        # Проверяем, что клик по строке, а не по заголовку
+        item = self.tree.identify_row(event.y)
+        region = self.tree.identify_region(event.x, event.y)
+        
+        # Игнорируем клики по заголовкам и другим областям
+        if region == "heading" or region == "separator":
+            return
+        
+        if item:
+            self.drag_item = item
+            self.drag_start_index = self.tree.index(item)
+            self.drag_start_y = event.y
+            self.is_dragging = False
+    
+    def on_treeview_drag_motion(self, event):
+        """Перемещение при перетаскивании строки"""
+        if self.drag_item is None:
+            return
+        
+        # Проверяем, что мышь переместилась достаточно далеко для начала перетаскивания
+        if not self.is_dragging:
+            if self.drag_start_y is not None and abs(event.y - self.drag_start_y) > 5:
+                self.is_dragging = True
+                # Выделяем исходный элемент
+                self.tree.selection_set(self.drag_item)
+        
+        if self.is_dragging:
+            item = self.tree.identify_row(event.y)
+            if item and item != self.drag_item:
+                # Визуальная индикация текущей позиции
+                self.tree.selection_set(item)
+                # Прокручиваем к элементу, если он вне видимой области
+                self.tree.see(item)
+    
+    def on_treeview_drag_release(self, event):
+        """Завершение перетаскивания строки"""
+        if self.drag_item and self.is_dragging:
+            target_item = self.tree.identify_row(event.y)
+            
+            if target_item and target_item != self.drag_item:
+                try:
+                    # Получаем индексы
+                    start_idx = self.tree.index(self.drag_item)
+                    target_idx = self.tree.index(target_item)
+                    
+                    # Перемещаем элемент в списке и в дереве
+                    if 0 <= start_idx < len(self.files) and 0 <= target_idx < len(self.files):
+                        # Перемещаем в списке файлов
+                        file_data = self.files.pop(start_idx)
+                        self.files.insert(target_idx, file_data)
+                        
+                        # Обновляем дерево
+                        self.refresh_treeview()
+                        
+                        # Выделяем перемещенный элемент
+                        children = self.tree.get_children()
+                        if target_idx < len(children):
+                            self.tree.selection_set(children[target_idx])
+                            self.tree.see(children[target_idx])  # Прокручиваем к элементу
+                        
+                        self.log(f"Файл '{file_data['old_name']}' перемещен с позиции {start_idx + 1} на {target_idx + 1}")
+                except Exception as e:
+                    self.log(f"Ошибка при перемещении файла: {e}")
+        
+        # Сброс состояния
+        self.drag_item = None
+        self.drag_start_index = None
+        self.drag_start_y = None
+        self.is_dragging = False
+    
+    def refresh_treeview(self):
+        """Обновление таблицы для синхронизации с списком файлов"""
+        # Удаляем все элементы
+        for item in self.tree.get_children():
+            self.tree.delete(item)
+        
+        # Добавляем элементы в правильном порядке
+        for file_data in self.files:
+            status = file_data.get('status', 'Готов')
+            tags = ()
+            if status == "Готов":
+                tags = ('ready',)
+            elif "Ошибка" in status:
+                tags = ('error',)
+            elif "Конфликт" in status:
+                tags = ('conflict',)
+            
+            self.tree.insert("", tk.END, values=(
+                file_data['old_name'],
+                file_data['new_name'],
+                file_data['extension'],
+                file_data['path'],
+                status
+            ), tags=tags)
+    
     def log(self, message: str):
         """Добавление сообщения в лог"""
         timestamp = datetime.now().strftime("%H:%M:%S")
-        self.log_text.insert(tk.END, f"[{timestamp}] {message}\n")
-        self.log_text.see(tk.END)
+        log_message = f"[{timestamp}] {message}\n"
+        
+        # Выводим в консоль для отладки
+        print(log_message.strip())
+        
+        # Добавляем в лог, если окно лога открыто
+        if hasattr(self, 'log_text') and self.log_text is not None:
+            try:
+                self.log_text.insert(tk.END, log_message)
+                self.log_text.see(tk.END)
+            except tk.TclError:
+                # Окно было закрыто
+                self.log_text = None
+    
+    def clear_log(self):
+        """Очистка лога операций"""
+        if hasattr(self, 'log_text') and self.log_text is not None:
+            try:
+                self.log_text.delete(1.0, tk.END)
+                self.log("Лог очищен")
+            except tk.TclError:
+                self.log_text = None
+    
+    def save_log(self):
+        """Сохранение лога в файл"""
+        if hasattr(self, 'log_text') and self.log_text is not None:
+            try:
+                log_content = self.log_text.get(1.0, tk.END)
+                if not log_content.strip():
+                    messagebox.showwarning("Предупреждение", "Лог пуст, нечего сохранять.")
+                    return
+                
+                filename = filedialog.asksaveasfilename(
+                    defaultextension=".txt",
+                    filetypes=[("Текстовые файлы", "*.txt"), ("Все файлы", "*.*")],
+                    title="Сохранить лог"
+                )
+                
+                if filename:
+                    with open(filename, 'w', encoding='utf-8') as f:
+                        f.write(log_content)
+                    messagebox.showinfo("Успех", f"Лог сохранен в файл:\n{filename}")
+                    self.log(f"Лог сохранен в файл: {filename}")
+            except Exception as e:
+                messagebox.showerror("Ошибка", f"Не удалось сохранить лог: {e}")
+        else:
+            messagebox.showwarning("Предупреждение", "Окно лога не открыто.")
     
     def add_files(self):
         """Добавление файлов через диалог выбора"""
@@ -697,7 +2383,7 @@ class FileRenamerApp:
             count = 0
             for root, dirs, files in os.walk(folder):
                 for file in files:
-                    file_path = os.path.join(root_dir, file)
+                    file_path = os.path.join(root, file)
                     self.add_file(file_path)
                     count += 1
             self.update_status()
@@ -705,7 +2391,21 @@ class FileRenamerApp:
     
     def add_file(self, file_path: str):
         """Добавление одного файла в список"""
+        print(f"DEBUG add_file: проверяю файл {file_path}")
+        
         if not os.path.isfile(file_path):
+            print(f"DEBUG add_file: {file_path} не является файлом")
+            return
+        
+        # Нормализуем путь для проверки дубликатов
+        file_path = os.path.normpath(os.path.abspath(file_path))
+        
+        # Проверяем, нет ли уже такого файла в списке
+        for existing_file in self.files:
+            existing_path = os.path.normpath(os.path.abspath(existing_file.get('full_path', '')))
+            if existing_path == file_path:
+                # Файл уже есть в списке, пропускаем
+                print(f"DEBUG add_file: файл {file_path} уже в списке, пропускаю")
             return
         
         path_obj = Path(file_path)
@@ -726,6 +2426,8 @@ class FileRenamerApp:
         item = self.tree.insert("", tk.END, values=(
             old_name, old_name, extension, path, 'Готов'
         ), tags=('ready',))
+        
+        print(f"DEBUG add_file: файл {old_name} добавлен в список")
     
     def clear_files(self):
         """Очистка списка файлов"""
@@ -894,17 +2596,11 @@ class FileRenamerApp:
         quick_frame = tk.Frame(self.settings_frame, bg=self.colors['bg_card'])
         quick_frame.pack(fill=tk.X, pady=(0, 15))
         
-        btn_quick = tk.Button(quick_frame, text="📋 Быстрые шаблоны", 
-                              command=self.show_quick_templates,
-                              bg=self.colors['primary'],
-                              fg='white',
-                              font=('Segoe UI', 10, 'bold'),
-                              relief='flat',
-                              borderwidth=0,
-                              padx=18, pady=11,
-                              cursor='hand2',
-                              activebackground=self.colors['primary_hover'],
-                              activeforeground='white')
+        btn_quick = self.create_rounded_button(
+            quick_frame, "📋 Быстрые шаблоны", self.show_quick_templates,
+            self.colors['primary'], 'white',
+            font=('Segoe UI', 9, 'bold'), padx=10, pady=6,
+            active_bg=self.colors['primary_hover'])
         btn_quick.pack(fill=tk.X)
         
         # Поле ввода шаблона
@@ -917,18 +2613,11 @@ class FileRenamerApp:
         self.new_name_template.pack(fill=tk.X, pady=(0, 12))
         
         # Кнопка применения шаблона
-        apply_template_btn = tk.Button(self.settings_frame, 
-                                      text="✅ Применить шаблон", 
-                                      command=self.apply_template_quick,
-                                      bg=self.colors['success'],
-                                      fg='white',
-                                      font=('Segoe UI', 10, 'bold'),
-                                      relief='flat',
-                                      borderwidth=0,
-                                      padx=18, pady=11,
-                                      cursor='hand2',
-                                      activebackground=self.colors['success_hover'],
-                                      activeforeground='white')
+        apply_template_btn = self.create_rounded_button(
+            self.settings_frame, "✅ Применить шаблон", self.apply_template_quick,
+            self.colors['success'], 'white',
+            font=('Segoe UI', 9, 'bold'), padx=10, pady=6,
+            active_bg=self.colors['success_hover'])
         apply_template_btn.pack(fill=tk.X, pady=(0, 15))
         
         # Предупреждение
@@ -939,7 +2628,7 @@ class FileRenamerApp:
         warning_frame.pack(fill=tk.X, pady=(0, 15))
         
         warning_label = tk.Label(warning_frame, text="⚠ БЕЗ {name} - имя полностью заменяется!", 
-                               font=('Segoe UI', 9, 'bold'),
+                               font=('Segoe UI', 10, 'bold'),
                                bg='#FEF3C7', fg='#92400E',
                                padx=12, pady=10)
         warning_label.pack(anchor=tk.W)
@@ -999,7 +2688,7 @@ class FileRenamerApp:
             
             # Описание
             desc_label = tk.Label(var_frame, text=f"- {desc}", 
-                                 font=('Segoe UI', 9),
+                                 font=('Segoe UI', 10),
                                  foreground=self.colors['text_secondary'],
                                  bg=self.colors['bg_secondary'])
             desc_label.pack(side=tk.LEFT, padx=(10, 0))
@@ -1066,30 +2755,18 @@ class FileRenamerApp:
                 template_window.destroy()
                 self.log(f"Выбран шаблон: {template}")
         
-        btn_select = tk.Button(btn_frame, text="Выбрать", 
-                               command=select_template,
-                               bg=self.colors['primary'],
-                               fg='white',
-                               font=('Segoe UI', 10, 'bold'),
-                               relief='flat',
-                               borderwidth=0,
-                               padx=14, pady=9,
-                               cursor='hand2',
-                               activebackground=self.colors['primary_hover'],
-                               activeforeground='white')
+        btn_select = self.create_rounded_button(
+            btn_frame, "Выбрать", select_template,
+            self.colors['primary'], 'white',
+            font=('Segoe UI', 9, 'bold'), padx=10, pady=6,
+            active_bg=self.colors['primary_hover'])
         btn_select.pack(side=tk.LEFT, padx=5, fill=tk.X, expand=True)
         
-        btn_cancel = tk.Button(btn_frame, text="Отмена", 
-                               command=template_window.destroy,
-                               bg='#818CF8',
-                               fg='white',
-                               font=('Segoe UI', 9, 'bold'),
-                               relief='flat',
-                               borderwidth=0,
-                               padx=14, pady=9,
-                               cursor='hand2',
-                               activebackground='#6366F1',
-                               activeforeground='white')
+        btn_cancel = self.create_rounded_button(
+            btn_frame, "Отмена", template_window.destroy,
+            '#818CF8', 'white',
+            font=('Segoe UI', 9, 'bold'), padx=10, pady=6,
+            active_bg='#6366F1')
         btn_cancel.pack(side=tk.LEFT, padx=5, fill=tk.X, expand=True)
         
         # Двойной клик для выбора
@@ -1232,17 +2909,11 @@ class FileRenamerApp:
         self.regex_replace = ttk.Entry(self.settings_frame, width=30)
         self.regex_replace.pack(fill=tk.X, pady=2)
         
-        btn_test = tk.Button(self.settings_frame, text="Тест Regex", 
-                             command=self.test_regex,
-                             bg='#818CF8',
-                             fg='white',
-                             font=('Segoe UI', 9, 'bold'),
-                             relief='flat',
-                             borderwidth=0,
-                             padx=14, pady=9,
-                             cursor='hand2',
-                             activebackground='#6366F1',
-                             activeforeground='white')
+        btn_test = self.create_rounded_button(
+            self.settings_frame, "Тест Regex", self.test_regex,
+            '#818CF8', 'white',
+            font=('Segoe UI', 9, 'bold'), padx=10, pady=6,
+            active_bg='#6366F1')
         btn_test.pack(pady=8, fill=tk.X)
     
     def test_regex(self) -> None:
@@ -1540,6 +3211,13 @@ class FileRenamerApp:
         
         self.progress['maximum'] = total
         self.progress['value'] = 0
+        # Синхронизация прогресс-бара в окне действий, если оно открыто
+        if hasattr(self, 'progress_window') and self.progress_window is not None:
+            try:
+                self.progress_window['maximum'] = total
+                self.progress_window['value'] = 0
+            except:
+                pass
         
         for i, file_data in enumerate(files_to_rename):
             try:
@@ -1620,6 +3298,12 @@ class FileRenamerApp:
                 self.log(f"Ошибка при переименовании {file_data.get('old_name', 'unknown')}: {e}")
             
             self.progress['value'] = i + 1
+            # Синхронизация прогресс-бара в окне действий, если оно открыто
+            if hasattr(self, 'progress_window') and self.progress_window is not None:
+                try:
+                    self.progress_window['value'] = i + 1
+                except:
+                    pass
         
         # Обновление интерфейса
         self.root.after(0, lambda: self.rename_complete(success_count, error_count))
@@ -1628,6 +3312,12 @@ class FileRenamerApp:
         """Завершение переименования"""
         messagebox.showinfo("Завершено", f"Переименование завершено.\nУспешно: {success}\nОшибок: {error}")
         self.progress['value'] = 0
+        # Синхронизация прогресс-бара в окне действий, если оно открыто
+        if hasattr(self, 'progress_window') and self.progress_window is not None:
+            try:
+                self.progress_window['value'] = 0
+            except:
+                pass
         
         # Обновление списка файлов
         for item in self.tree.get_children():
@@ -1687,7 +3377,12 @@ class FileRenamerApp:
 
 def main():
     """Главная функция запуска приложения"""
-    root = tk.Tk()
+    # Используем TkinterDnD если доступно
+    if HAS_TKINTERDND2:
+        root = TkinterDnD.Tk()
+    else:
+        root = tk.Tk()
+    
     app = FileRenamerApp(root)
     root.mainloop()
 
