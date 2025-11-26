@@ -1,11 +1,9 @@
-@echo off
-chcp 65001 >nul
+@echo off & if "%1"=="hidden" goto :hidden
 cd /d "%~dp0"
-python file_renamer.py
-if errorlevel 1 (
-    echo.
-    echo Ошибка запуска! Проверьте, что Python установлен.
-    echo.
-    pause
-)
+start "" /b wscript.exe //nologo "%~dp0Запуск.vbs"
+exit
+:hidden
+cd /d "%~dp0"
+wscript.exe //nologo "%~dp0Запуск.vbs"
+exit
 

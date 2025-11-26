@@ -1,8 +1,12 @@
-# Python
+# Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
 *$py.class
+
+# C extensions
 *.so
+
+# Distribution / packaging
 .Python
 build/
 develop-eggs/
@@ -20,15 +24,18 @@ wheels/
 .installed.cfg
 *.egg
 
-# Virtual Environment
+# PyInstaller
+*.manifest
+*.spec
+
+# Virtual environments
 venv/
-env/
 ENV/
-.venv
+env/
 
 # IDE
-.idea/
 .vscode/
+.idea/
 *.swp
 *.swo
 *~
@@ -38,6 +45,4 @@ ENV/
 Thumbs.db
 
 # Project specific
-*.pyc
-*.pyo
-
+*.log

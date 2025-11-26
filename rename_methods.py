@@ -311,12 +311,14 @@ class NewNameMethod(RenameMethod):
     def __init__(self, template: str, metadata_extractor=None, file_number: int = 1):
         """
         Args:
-            template: Шаблон нового имени (может содержать {name}, {ext}, {n}, {n:03d}, {width}x{height} и т.д.)
+            template: Шаблон нового имени (может содержать {name}, {ext}, {n}, {n:03d}, 
+                     {width}x{height}, {date_created} и т.д.)
             metadata_extractor: Экстрактор метаданных
             file_number: Начальный номер файла (для {n})
         """
         self.template = template
         self.metadata_extractor = metadata_extractor
+        self.start_number = file_number
         self.file_number = file_number
         # Определение формата нумерации из шаблона
         self.number_format = self._detect_number_format(template)
@@ -338,9 +340,9 @@ class NewNameMethod(RenameMethod):
         # Начинаем с шаблона - он полностью заменяет имя, если нет {name}
         new_name = self.template
         
-        # Сначала заменяем все переменные, кроме {name}
+        # Заменяем переменные в фигурных скобках
         # {ext} - расширение (без точки)
-        ext_without_dot = extension.lstrip('.')
+        ext_without_dot = extension.lstrip('.') if extension else ""
         new_name = new_name.replace("{ext}", ext_without_dot)
         
         # {n} - номер файла (с поддержкой формата {n:03d}, {n:02d} и т.д.)
@@ -415,5 +417,5 @@ class NewNameMethod(RenameMethod):
     
     def reset(self):
         """Сброс счетчика (вызывается перед применением к новому списку)"""
-        self.file_number = 1
+        self.file_number = self.start_number
 

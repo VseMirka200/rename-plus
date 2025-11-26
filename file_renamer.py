@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 import tkinter as tk
-from tkinter import filedialog, messagebox, ttk
+from tkinter import filedialog, messagebox, ttk, simpledialog
 
 # Попытка импортировать PIL для закругленных углов
 try:
@@ -26,20 +26,17 @@ try:
     from tkinterdnd2 import DND_FILES, TkinterDnD
     HAS_TKINTERDND2 = True
 except ImportError:
-    # Попытка автоматической установки библиотеки
-    try:
-        print("Установка библиотеки tkinterdnd2...")
-        subprocess.check_call(
-            [sys.executable, "-m", "pip", "install", "tkinterdnd2", "--quiet"]
-        )
-        print("Библиотека tkinterdnd2 успешно установлена!")
-        # Повторная попытка импорта
-        from tkinterdnd2 import DND_FILES, TkinterDnD
-        HAS_TKINTERDND2 = True
-    except (subprocess.CalledProcessError, ImportError) as e:
-        print(f"Не удалось автоматически установить tkinterdnd2: {e}")
-        print("Вы можете установить её вручную: pip install tkinterdnd2")
-        HAS_TKINTERDND2 = False
+    HAS_TKINTERDND2 = False
+
+# Попытка импортировать pystray для системного трея
+HAS_PYSTRAY = False
+try:
+    import pystray
+    from pystray import MenuItem as item
+    from PIL import Image as PILImage
+    HAS_PYSTRAY = True
+except ImportError:
+    HAS_PYSTRAY = False
 
 from metadata import MetadataExtractor
 from rename_methods import (
@@ -69,9 +66,12 @@ class FileRenamerApp:
             root: Корневое окно Tkinter
         """
         self.root = root
-        self.root.title("Назови")
+        self.root.title("Назови 1.0.0")
         self.root.geometry("1400x900")
-        self.root.minsize(1200, 700)
+        self.root.minsize(800, 500)  # Уменьшен минимальный размер для поддержки маленьких экранов
+        
+        # Установка иконки приложения
+        self.set_icon(self.root)
         
         # Настройка адаптивности
         self.root.columnconfigure(0, weight=1)
@@ -89,10 +89,16 @@ class FileRenamerApp:
         # Окна для вкладок
         self.windows = {
             'actions': None,
-            'tabs': None  # Окно с вкладками для логов, настроек и т.д.
+            'tabs': None,  # Окно с вкладками для логов, настроек и т.д.
+            'methods': None  # Окно методов переименования
         }
         self.tabs_window_notebook = None  # Notebook для вкладок
         self.log_text = None  # Ссылка на текстовое поле лога
+        
+        # Трей-иконка
+        self.tray_icon = None
+        self.tray_thread = None
+        self.minimize_to_tray = True
         
         # Инициализация модуля метаданных
         self.metadata_extractor = MetadataExtractor()
@@ -102,6 +108,12 @@ class FileRenamerApp:
             os.path.expanduser("~"), ".nazovi_settings.json"
         )
         self.settings = self.load_settings()
+        
+        # Файл для сохранения шаблонов
+        self.templates_file = os.path.join(
+            os.path.expanduser("~"), ".nazovi_templates.json"
+        )
+        self.saved_templates = self.load_templates()
         
         # Создание интерфейса
         self.create_widgets()
@@ -114,6 +126,64 @@ class FileRenamerApp:
         
         # Настройка перестановки файлов в таблице
         self.setup_treeview_drag_drop()
+        
+        # Инициализация трей-иконки
+        self.setup_tray_icon()
+        
+        # Обработчик закрытия окна - сворачивание в трей
+        self.root.protocol("WM_DELETE_WINDOW", self.on_close_window)
+    
+    def set_icon(self, window):
+        """Установка иконки приложения для окна.
+        
+        Args:
+            window: Окно Tkinter для установки иконки
+        """
+        try:
+            # Сначала пробуем использовать .ico файл для Windows (для лучшей поддержки в exe)
+            ico_path = os.path.join(os.path.dirname(__file__), "materials", "icon", "icon.ico")
+            if os.path.exists(ico_path):
+                try:
+                    window.iconbitmap(ico_path)
+                    return  # Успешно установили .ico файл
+                except Exception:
+                    pass  # Пробуем PNG как fallback
+            
+            # Путь к PNG иконке
+            icon_path = os.path.join(os.path.dirname(__file__), "materials", "icon", "1000x1000.png")
+            
+            # Проверяем существование файла
+            if os.path.exists(icon_path):
+                # Загружаем изображение
+                if HAS_PIL:
+                    # Используем PIL для загрузки PNG
+                    img = Image.open(icon_path)
+                    # Конвертируем в PhotoImage для Tkinter
+                    photo = ImageTk.PhotoImage(img)
+                    # Устанавливаем иконку
+                    window.iconphoto(False, photo)
+                    # Сохраняем ссылку, чтобы изображение не было удалено сборщиком мусора
+                    if not hasattr(self, '_icon_photos'):
+                        self._icon_photos = []
+                    self._icon_photos.append(photo)
+                else:
+                    # Если PIL недоступен, пробуем использовать встроенные возможности
+                    try:
+                        # Для Windows можно попробовать использовать .ico файл
+                        # Но сначала попробуем iconphoto с обычным PhotoImage
+                        photo = tk.PhotoImage(file=icon_path)
+                        window.iconphoto(False, photo)
+                        if not hasattr(self, '_icon_photos'):
+                            self._icon_photos = []
+                        self._icon_photos.append(photo)
+                    except Exception:
+                        # Если не получилось, пробуем iconbitmap для Windows
+                        # Создаем временный .ico файл или используем альтернативный путь
+                        pass
+        except Exception as e:
+            # Если не удалось установить иконку, просто игнорируем ошибку
+            # Не используем self.log, так как он может быть еще не инициализирован
+            print(f"Не удалось установить иконку: {e}")
     
     def bind_mousewheel(self, widget, canvas=None):
         """Привязка прокрутки колесом мыши к виджету.
@@ -161,7 +231,7 @@ class FileRenamerApp:
     
     def create_rounded_button(self, parent, text, command, bg_color, fg_color='white', 
                              font=('Segoe UI', 10, 'bold'), padx=16, pady=10, 
-                             active_bg=None, active_fg='white', width=None):
+                             active_bg=None, active_fg='white', width=None, expand=True):
         """Создание кнопки с закругленными углами через Canvas"""
         if active_bg is None:
             active_bg = bg_color
@@ -169,10 +239,26 @@ class FileRenamerApp:
         # Фрейм для кнопки
         btn_frame = tk.Frame(parent, bg=parent.cget('bg'))
         
+        # Вычисляем ширину текста для компактных кнопок
+        if not expand and width is None:
+            # Создаем временный label для измерения текста
+            temp_label = tk.Label(parent, text=text, font=font)
+            temp_label.update_idletasks()
+            text_width = temp_label.winfo_reqwidth()
+            temp_label.destroy()
+            width = text_width + padx * 2 + 10  # Добавляем небольшой запас
+        
         # Canvas для закругленного фона
+        canvas_height = pady*2 + 16
         canvas = tk.Canvas(btn_frame, highlightthickness=0, borderwidth=0,
-                          bg=parent.cget('bg'), height=pady*2 + 16)
-        canvas.pack(fill=tk.BOTH, expand=True)
+                          bg=parent.cget('bg'), height=canvas_height)
+        if expand:
+            canvas.pack(fill=tk.BOTH, expand=True)
+        else:
+            if width:
+                canvas.config(width=width)
+                btn_frame.config(width=width)  # Устанавливаем фиксированную ширину для Frame
+            canvas.pack(fill=tk.NONE, expand=False)
         
         # Сохраняем параметры
         canvas.btn_text = text
@@ -183,6 +269,8 @@ class FileRenamerApp:
         canvas.btn_active_fg = active_fg
         canvas.btn_font = font
         canvas.btn_state = 'normal'
+        canvas.btn_width = width  # Сохраняем ширину для компактных кнопок
+        canvas.btn_expand = expand
         
         def hex_to_rgb(hex_color):
             """Конвертация hex в RGB"""
@@ -191,15 +279,18 @@ class FileRenamerApp:
         
         def draw_button(state='normal'):
             canvas.delete('all')
-            w = canvas.winfo_width()
+            if canvas.btn_expand:
+                w = canvas.winfo_width()
+            else:
+                w = canvas.btn_width if canvas.btn_width else canvas.winfo_width()
             h = canvas.winfo_height()
             if w <= 1 or h <= 1:
                 # Если размер еще не установлен, ждем и перерисовываем
                 canvas.after(10, lambda: draw_button(state))
                 return
             
-            # Минимальная ширина для кнопки
-            if w < 50:
+            # Минимальная ширина для кнопки только для расширяемых
+            if canvas.btn_expand and w < 50:
                 w = 50
             
             radius = 8
@@ -247,6 +338,12 @@ class FileRenamerApp:
             canvas.btn_command()
         
         def on_configure(e):
+            # Для нерасширяемых кнопок игнорируем изменения размера от родителя
+            if not canvas.btn_expand and canvas.btn_width:
+                if canvas.winfo_width() != canvas.btn_width:
+                    canvas.config(width=canvas.btn_width)
+                if btn_frame.winfo_width() != canvas.btn_width:
+                    btn_frame.config(width=canvas.btn_width)
             draw_button(canvas.btn_state)
         
         canvas.bind('<Button-1>', on_click)
@@ -587,6 +684,29 @@ class FileRenamerApp:
             print(f"Ошибка сохранения настроек: {e}")
             return False
     
+    def load_templates(self):
+        """Загрузка сохраненных шаблонов из файла"""
+        default_templates = {}
+        try:
+            if os.path.exists(self.templates_file):
+                with open(self.templates_file, 'r', encoding='utf-8') as f:
+                    loaded = json.load(f)
+                    if isinstance(loaded, dict):
+                        default_templates = loaded
+        except Exception as e:
+            print(f"Ошибка загрузки шаблонов: {e}")
+        return default_templates
+    
+    def save_templates(self):
+        """Сохранение шаблонов в файл"""
+        try:
+            with open(self.templates_file, 'w', encoding='utf-8') as f:
+                json.dump(self.saved_templates, f, ensure_ascii=False, indent=2)
+            return True
+        except Exception as e:
+            print(f"Ошибка сохранения шаблонов: {e}")
+            return False
+    
     def setup_window_resize_handler(self, window, canvas=None, canvas_window=None):
         """Настройка обработчика изменения размера для окна с canvas"""
         def on_resize(event):
@@ -608,13 +728,20 @@ class FileRenamerApp:
                 list_frame_width = self.list_frame.winfo_width()
                 if list_frame_width > 100:  # Минимальная ширина для расчетов
                     # Вычитаем ширину скроллбара (примерно 20px) и отступы
-                    available_width = max(list_frame_width - 50, 400)
+                    available_width = max(list_frame_width - 50, 300)  # Минимальная ширина уменьшена
                     
-                    self.tree.column("old_name", width=int(available_width * 0.22))
-                    self.tree.column("new_name", width=int(available_width * 0.22))
-                    self.tree.column("extension", width=int(available_width * 0.10))
-                    self.tree.column("path", width=int(available_width * 0.35))
-                    self.tree.column("status", width=int(available_width * 0.11))
+                    # Убеждаемся, что минимальные ширины не слишком большие для маленьких окон
+                    min_width_old = max(80, int(available_width * 0.15))
+                    min_width_new = max(80, int(available_width * 0.15))
+                    min_width_ext = max(50, int(available_width * 0.08))
+                    min_width_path = max(100, int(available_width * 0.25))
+                    min_width_status = max(60, int(available_width * 0.10))
+                    
+                    self.tree.column("old_name", width=int(available_width * 0.22), minwidth=min_width_old)
+                    self.tree.column("new_name", width=int(available_width * 0.22), minwidth=min_width_new)
+                    self.tree.column("extension", width=int(available_width * 0.10), minwidth=min_width_ext)
+                    self.tree.column("path", width=int(available_width * 0.35), minwidth=min_width_path)
+                    self.tree.column("status", width=int(available_width * 0.11), minwidth=min_width_status)
             except Exception as e:
                 pass
     
@@ -624,7 +751,22 @@ class FileRenamerApp:
         # === ОСНОВНОЙ КОНТЕЙНЕР С ВКЛАДКАМИ ===
         # Создаем Notebook для вкладок
         main_notebook = ttk.Notebook(self.root)
-        main_notebook.pack(fill=tk.BOTH, expand=True, padx=30, pady=(30, 30))
+        main_notebook.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        
+        # Обработчик изменения размера главного окна
+        def on_root_resize(event=None):
+            if hasattr(self, 'update_tree_columns'):
+                self.root.after(100, self.update_tree_columns)
+            # Обновляем размер canvas в правой панели методов
+            if hasattr(self, 'settings_canvas') and self.settings_canvas:
+                try:
+                    canvas_width = self.settings_canvas.winfo_width()
+                    if canvas_width > 1 and hasattr(self, 'settings_canvas_window'):
+                        self.settings_canvas.itemconfig(self.settings_canvas_window, width=canvas_width)
+                except (AttributeError, tk.TclError):
+                    pass
+        
+        self.root.bind('<Configure>', on_root_resize)
         
         # Сохраняем ссылку на notebook
         self.main_notebook = main_notebook
@@ -632,27 +774,42 @@ class FileRenamerApp:
         # === ВКЛАДКА 1: ОСНОВНОЕ СОДЕРЖИМОЕ (файлы и методы) ===
         main_tab = tk.Frame(main_notebook, bg=self.colors['bg_main'])
         main_notebook.add(main_tab, text="📁 Файлы")
+        main_tab.columnconfigure(0, weight=1)
+        main_tab.rowconfigure(0, weight=1)
         
-        # Используем PanedWindow для изменения размеров панелей внутри основной вкладки
-        main_container = ttk.PanedWindow(main_tab, orient=tk.HORIZONTAL)
+        # Используем обычный Frame для распределения пространства (больше места для списка файлов)
+        main_container = tk.Frame(main_tab, bg=self.colors['bg_main'])
         main_container.pack(fill=tk.BOTH, expand=True)
+        main_container.columnconfigure(0, weight=3)  # Левая панель занимает ~75%
+        main_container.columnconfigure(1, weight=1)  # Правая панель занимает ~25%
+        main_container.rowconfigure(0, weight=1)
         
-        # Сохраняем ссылку для доступа
-        self.main_paned = main_container
+        # Сохраняем ссылку на main_container для обновления размеров
+        self.main_container = main_container
         
-        # Обработчик изменения размера PanedWindow для обновления колонок таблицы
-        def on_paned_resize(event=None):
-            if hasattr(self, 'update_tree_columns'):
-                self.root.after(100, self.update_tree_columns)
+        # Обработчик изменения размера для обновления колонок таблицы
+        def on_resize(event=None):
+            if event and event.widget == main_container:
+                if hasattr(self, 'update_tree_columns'):
+                    self.root.after(50, self.update_tree_columns)
+                # Обновляем размер canvas в правой панели
+                if hasattr(self, 'settings_canvas') and self.settings_canvas:
+                    try:
+                        canvas_width = self.settings_canvas.winfo_width()
+                        if canvas_width > 1:
+                            self.settings_canvas.itemconfig(self.settings_canvas_window, width=canvas_width)
+                    except (AttributeError, tk.TclError):
+                        pass
         
-        main_container.bind('<ButtonRelease-1>', on_paned_resize)  # После перемещения разделителя
-        main_container.bind('<Configure>', on_paned_resize)  # При изменении размера
+        main_container.bind('<Configure>', on_resize)  # При изменении размера
+        main_tab.bind('<Configure>', lambda e: on_resize(e) if e.widget == main_tab else None)
         
         # Левая часть - список файлов
         left_panel = ttk.LabelFrame(main_container, text="📋 Список файлов", 
-                                    style='Card.TLabelframe', padding=24)
-        # weight=2 означает, что левая панель будет занимать больше места
-        main_container.add(left_panel, weight=2)
+                                    style='Card.TLabelframe', padding=12)
+        left_panel.grid(row=0, column=0, sticky="nsew", padx=(0, 5))
+        left_panel.columnconfigure(0, weight=1)
+        left_panel.rowconfigure(1, weight=1)  # Строка с таблицей файлов
         
         # Счетчик файлов рядом с заголовком списка
         left_panel_header = tk.Frame(left_panel, bg=self.colors['bg_card'])
@@ -739,14 +896,15 @@ class FileRenamerApp:
         self.tree.tag_configure('conflict', background='#FEF3C7', foreground='#92400E')
         
         # Настройка колонок с адаптивными размерами (процент от ширины)
-        list_frame.update_idletasks()  # Обновляем размеры
-        frame_width = list_frame.winfo_width() if list_frame.winfo_width() > 1 else 800
+        # Используем минимальные ширины, которые будут обновлены при изменении размера
+        self.tree.column("old_name", width=150, anchor='w', minwidth=80)
+        self.tree.column("new_name", width=150, anchor='w', minwidth=80)
+        self.tree.column("extension", width=70, anchor='center', minwidth=50)
+        self.tree.column("path", width=250, anchor='w', minwidth=100)
+        self.tree.column("status", width=80, anchor='center', minwidth=60)
         
-        self.tree.column("old_name", width=int(frame_width * 0.22), anchor='w', minwidth=100)
-        self.tree.column("new_name", width=int(frame_width * 0.22), anchor='w', minwidth=100)
-        self.tree.column("extension", width=int(frame_width * 0.10), anchor='center', minwidth=60)
-        self.tree.column("path", width=int(frame_width * 0.35), anchor='w', minwidth=150)
-        self.tree.column("status", width=int(frame_width * 0.11), anchor='center', minwidth=80)
+        # Обновляем колонки после инициализации
+        self.root.after(200, self.update_tree_columns)
         
         # Сохраняем ссылку на list_frame для обновления размеров
         self.list_frame = list_frame
@@ -771,27 +929,7 @@ class FileRenamerApp:
         for col in ("old_name", "new_name", "extension", "path", "status"):
             self.tree.heading(col, command=lambda c=col: self.sort_column(c))
         
-        # === КНОПКИ (под списком файлов слева) ===
-        buttons_frame = tk.Frame(left_panel, bg=self.colors['bg_card'])
-        buttons_frame.pack(fill=tk.X, pady=(16, 16))
-        buttons_frame.columnconfigure(0, weight=1)
-        buttons_frame.columnconfigure(1, weight=1)
-        
-        btn_apply = self.create_rounded_button(
-            buttons_frame, "✨ Применить метод", self.apply_methods,
-            self.colors['primary'], 'white',
-            font=('Segoe UI', 11, 'bold'), padx=20, pady=12,
-            active_bg=self.colors['primary_hover'])
-        btn_apply.grid(row=0, column=0, padx=(0, 8), sticky="ew")
-        
-        btn_start = self.create_rounded_button(
-            buttons_frame, "▶️ Начать переименование", self.start_rename,
-            self.colors['success'], 'white',
-            font=('Segoe UI', 11, 'bold'), padx=20, pady=12,
-            active_bg=self.colors['success_hover'])
-        btn_start.grid(row=0, column=1, padx=0, sticky="ew")
-        
-        # === ПРОГРЕСС БАР (под кнопками слева) ===
+        # === ПРОГРЕСС БАР (под списком файлов слева) ===
         progress_container = tk.Frame(left_panel, bg=self.colors['bg_card'])
         progress_container.pack(fill=tk.X, pady=(0, 0))
         
@@ -804,20 +942,27 @@ class FileRenamerApp:
         self.progress.pack(fill=tk.X)
         
         # === ПРАВАЯ ПАНЕЛЬ (только методы) ===
+        # Правая панель занимает 50% пространства
         right_panel = ttk.LabelFrame(main_container, text="⚙️ Методы переименования", 
                                      style='Card.TLabelframe', padding=0)
-        main_container.add(right_panel, weight=1)
-        right_panel.configure(width=350)
+        right_panel.grid(row=0, column=1, sticky="nsew", padx=(5, 0))
+        right_panel.columnconfigure(0, weight=1)
+        right_panel.rowconfigure(0, weight=1)
         
-        # Внутренний Frame для содержимого с отступами
+        # Внутренний Frame для содержимого с минимальными отступами
         methods_frame = tk.Frame(right_panel, bg=self.colors['bg_card'])
-        methods_frame.pack(fill=tk.BOTH, expand=True, padx=24, pady=24)
+        methods_frame.pack(fill=tk.BOTH, expand=True, padx=8, pady=8)
+        methods_frame.columnconfigure(0, weight=1)
+        methods_frame.rowconfigure(1, weight=1)  # Строка с настройками метода
+        
+        # Сохраняем ссылку на панель
+        self.right_panel = right_panel
         
         # Выбор метода
         method_label = tk.Label(methods_frame, text="🔧 Выберите метод:", 
-                               font=('Segoe UI', 10, 'bold'),
+                               font=('Segoe UI', 9, 'bold'),
                                bg=self.colors['bg_card'], fg=self.colors['text_primary'])
-        method_label.pack(anchor=tk.W, pady=(0, 10))
+        method_label.pack(anchor=tk.W, pady=(0, 8))
         
         self.method_var = tk.StringVar()
         method_values = [
@@ -829,7 +974,6 @@ class FileRenamerApp:
             textvariable=self.method_var,
             values=method_values,
             state="readonly",
-            width=30,
             font=('Segoe UI', 9)
         )
         self.method_combo.pack(fill=tk.X, pady=(0, 16))
@@ -839,6 +983,8 @@ class FileRenamerApp:
         # Область настроек метода с прокруткой
         settings_container = tk.Frame(methods_frame, bg=self.colors['bg_card'])
         settings_container.pack(fill=tk.BOTH, expand=True, pady=(0, 15))
+        settings_container.columnconfigure(0, weight=1)
+        settings_container.rowconfigure(0, weight=1)
         
         # Canvas для прокрутки настроек
         settings_canvas = tk.Canvas(settings_container, bg=self.colors['bg_card'], 
@@ -852,67 +998,100 @@ class FileRenamerApp:
         
         scrollable_frame.bind("<Configure>", on_frame_configure)
         
-        settings_canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+        settings_canvas_window = settings_canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+        
+        def on_canvas_configure(event):
+            if event.widget == settings_canvas:
+                try:
+                    canvas_width = event.width
+                    settings_canvas.itemconfig(settings_canvas_window, width=canvas_width)
+                except (AttributeError, tk.TclError):
+                    pass
+        
+        settings_canvas.bind('<Configure>', on_canvas_configure)
         settings_canvas.configure(yscrollcommand=settings_scrollbar.set)
+        
+        # Сохраняем ссылки для обновления размеров
+        self.settings_canvas = settings_canvas
+        self.settings_canvas_window = settings_canvas_window
         
         # Привязка прокрутки колесом мыши
         self.bind_mousewheel(settings_canvas, settings_canvas)
         self.bind_mousewheel(scrollable_frame, settings_canvas)
         
-        settings_canvas.pack(side="left", fill="both", expand=True)
-        settings_scrollbar.pack(side="right", fill="y")
+        settings_canvas.grid(row=0, column=0, sticky="nsew")
+        settings_scrollbar.grid(row=0, column=1, sticky="ns")
         
         self.settings_frame = scrollable_frame
         
-        # Кнопки управления методами
+        # Объединенная группа кнопок (две колонки, кнопка "Начать переименование" внизу на всю ширину)
         method_buttons_frame = tk.Frame(methods_frame, bg=self.colors['bg_card'])
         method_buttons_frame.pack(fill=tk.X, pady=(0, 20))
         method_buttons_frame.columnconfigure(0, weight=1)
         method_buttons_frame.columnconfigure(1, weight=1)
-        method_buttons_frame.columnconfigure(2, weight=1)
         
+        font = ('Segoe UI', 9, 'bold')
+        padx = 1  # Минимальные отступы для компактности
+        
+        # Первая колонка: кнопки управления методами (растягиваются на всю ширину колонки)
         btn_add_method = self.create_rounded_button(
             method_buttons_frame, "➕ Добавить", self.add_method,
             self.colors['primary'], 'white',
-            font=('Segoe UI', 10, 'bold'), padx=12, pady=8,
-            active_bg=self.colors['primary_hover'])
-        btn_add_method.grid(row=0, column=0, padx=(0, 6), sticky="ew")
+            font=font, padx=padx, pady=10,
+            active_bg=self.colors['primary_hover'], expand=True)
+        btn_add_method.grid(row=0, column=0, sticky="ew", padx=(0, 5), pady=(0, 5))
         
         btn_remove_method = self.create_rounded_button(
             method_buttons_frame, "➖ Удалить", self.remove_method,
             self.colors['primary_light'], 'white',
-            font=('Segoe UI', 10, 'bold'), padx=12, pady=8,
-            active_bg=self.colors['primary'])
-        btn_remove_method.grid(row=0, column=1, padx=(0, 6), sticky="ew")
+            font=font, padx=padx, pady=10,
+            active_bg=self.colors['primary'], expand=True)
+        btn_remove_method.grid(row=1, column=0, sticky="ew", padx=(0, 5), pady=(0, 5))
         
         btn_clear_methods = self.create_rounded_button(
             method_buttons_frame, "🗑️ Очистить", self.clear_methods,
             self.colors['danger'], 'white',
-            font=('Segoe UI', 10, 'bold'), padx=12, pady=8,
-            active_bg=self.colors['danger_hover'])
-        btn_clear_methods.grid(row=0, column=2, padx=0, sticky="ew")
+            font=font, padx=padx, pady=10,
+            active_bg=self.colors['danger_hover'], expand=True)
+        btn_clear_methods.grid(row=2, column=0, sticky="ew", padx=(0, 5), pady=(0, 5))
         
-        # Список примененных методов
-        applied_label = tk.Label(methods_frame, text="📝 Примененные методы:", 
-                                font=('Segoe UI', 10, 'bold'),
-                                bg=self.colors['bg_card'], fg=self.colors['text_primary'])
-        applied_label.pack(anchor=tk.W, pady=(0, 10))
+        # Вторая колонка: кнопки шаблонов (растягиваются на всю ширину колонки, показываются только для метода "Новое имя")
+        self.template_buttons_frame = tk.Frame(method_buttons_frame, bg=self.colors['bg_card'])
+        self.template_buttons_frame.grid(row=0, column=1, rowspan=3, sticky="nsew")
+        self.template_buttons_frame.columnconfigure(0, weight=1)
         
-        listbox_frame = tk.Frame(methods_frame, bg=self.colors['bg_card'], 
-                                relief='flat', borderwidth=1,
-                                highlightbackground=self.colors['border'],
-                                highlightthickness=1)
-        listbox_frame.pack(fill=tk.X, pady=(0, 0))
+        self.btn_quick = self.create_rounded_button(
+            self.template_buttons_frame, "📋 Быстрые шаблоны", self.show_quick_templates,
+            self.colors['primary'], 'white',
+            font=font, padx=padx, pady=10,
+            active_bg=self.colors['primary_hover'], expand=True)
+        self.btn_quick.grid(row=0, column=0, sticky="ew", pady=(0, 5))
         
-        self.methods_listbox = tk.Listbox(listbox_frame, height=5, 
-                                         font=('Segoe UI', 9),
-                                         relief='flat', borderwidth=0,
-                                         bg=self.colors['bg_card'], fg=self.colors['text_primary'],
-                                         selectbackground=self.colors['primary'],
-                                         selectforeground='white',
-                                         highlightthickness=0)
-        self.methods_listbox.pack(fill=tk.BOTH, expand=True, padx=2, pady=2)
+        self.btn_save_template = self.create_rounded_button(
+            self.template_buttons_frame, "💾 Сохранить шаблон", self.save_current_template,
+            '#10B981', 'white',
+            font=font, padx=padx, pady=10,
+            active_bg='#059669', expand=True)
+        self.btn_save_template.grid(row=1, column=0, sticky="ew", pady=(0, 5))
         
+        self.btn_saved = self.create_rounded_button(
+            self.template_buttons_frame, "💾 Сохраненные шаблоны", self.show_saved_templates,
+            self.colors['primary'], 'white',
+            font=font, padx=padx, pady=10,
+            active_bg=self.colors['primary_hover'], expand=True)
+        self.btn_saved.grid(row=2, column=0, sticky="ew")
+        
+        # Кнопка "Начать переименование" внизу на всю ширину двух колонок
+        btn_start_rename = self.create_rounded_button(
+            method_buttons_frame, "▶️ Начать переименование", self.start_rename,
+            self.colors['success'], 'white',
+            font=font, padx=2, pady=10,
+            active_bg=self.colors['success_hover'], expand=True)
+        btn_start_rename.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(5, 0))
+        
+        # Скрытый listbox для внутреннего использования методов (для функции удаления)
+        self.methods_listbox = tk.Listbox(methods_frame, height=0)
+        self.methods_listbox.pack_forget()  # Скрываем его
         
         # Создаем log_text для логирования (будет использоваться в окне лога)
         self.log_text = None
@@ -920,16 +1099,25 @@ class FileRenamerApp:
         # Инициализация первого метода (Новое имя)
         self.on_method_selected()
         
+        
+        
         # === СОЗДАНИЕ ВКЛАДОК НА ГЛАВНОМ ЭКРАНЕ ===
         # Создаем вкладки для логов, настроек, о программе и поддержки
         self._create_main_log_tab()
         self._create_main_settings_tab()
         self._create_main_about_tab()
         self._create_main_support_tab()
+        
     
     def open_actions_window(self):
         """Открытие окна действий"""
         if self.windows['actions'] is not None and self.windows['actions'].winfo_exists():
+            # Если окно свернуто, разворачиваем его
+            try:
+                if self.windows['actions'].state() == 'iconic':
+                    self.windows['actions'].deiconify()
+            except (AttributeError, tk.TclError):
+                pass
             self.windows['actions'].lift()
             self.windows['actions'].focus_force()
             return
@@ -939,6 +1127,9 @@ class FileRenamerApp:
         window.geometry("600x180")
         window.minsize(500, 150)
         window.configure(bg=self.colors['bg_card'])
+        
+        # Установка иконки
+        self.set_icon(window)
         
         # Настройка адаптивности окна
         window.columnconfigure(0, weight=1)
@@ -971,13 +1162,6 @@ class FileRenamerApp:
         buttons_frame.columnconfigure(0, weight=1)
         buttons_frame.columnconfigure(1, weight=1)
         
-        btn_apply = self.create_rounded_button(
-            buttons_frame, "✨ Применить метод", self.apply_methods,
-            self.colors['primary'], 'white',
-            font=('Segoe UI', 9, 'bold'), padx=10, pady=6,
-            active_bg=self.colors['primary_hover'])
-        btn_apply.grid(row=0, column=0, sticky="ew", padx=4)
-
         btn_start = self.create_rounded_button(
             buttons_frame, "▶️ Начать переименование", self.start_rename,
             self.colors['success'], 'white',
@@ -998,8 +1182,560 @@ class FileRenamerApp:
         self.progress_window = ttk.Progressbar(progress_container, mode='determinate')
         self.progress_window.pack(fill=tk.X)
         
-        # Обработчик закрытия окна
-        window.protocol("WM_DELETE_WINDOW", lambda: self.close_window('actions'))
+        # Обработчик закрытия окна - делаем окно статичным (сворачиваем вместо закрытия)
+        def on_close_actions_window():
+            # Вместо закрытия сворачиваем окно
+            try:
+                if window.winfo_exists():
+                    window.iconify()
+            except (AttributeError, tk.TclError):
+                pass
+        
+        window.protocol("WM_DELETE_WINDOW", on_close_actions_window)
+    
+    def open_methods_window(self):
+        """Открытие окна методов переименования"""
+        if self.windows['methods'] is not None and self.windows['methods'].winfo_exists():
+            try:
+                if self.windows['methods'].state() == 'iconic':
+                    self.windows['methods'].deiconify()
+            except (AttributeError, tk.TclError):
+                pass
+            self.windows['methods'].lift()
+            self.windows['methods'].focus_force()
+            if hasattr(self, 'methods_window_listbox'):
+                self._update_methods_window_list()
+            return
+        
+        window = tk.Toplevel(self.root)
+        window.title("⚙️ Методы переименования")
+        window.geometry("500x650")
+        window.minsize(450, 550)
+        window.configure(bg=self.colors['bg_card'])
+        self.set_icon(window)
+        
+        window.columnconfigure(0, weight=1)
+        window.rowconfigure(0, weight=1)
+        self.windows['methods'] = window
+        
+        # Основной контейнер
+        main_frame = tk.Frame(window, bg=self.colors['bg_card'])
+        main_frame.grid(row=0, column=0, sticky="nsew", padx=12, pady=12)
+        main_frame.columnconfigure(0, weight=1)
+        main_frame.rowconfigure(1, weight=1)
+        
+        # Заголовок
+        header_frame = tk.Frame(main_frame, bg=self.colors['bg_card'])
+        header_frame.grid(row=0, column=0, sticky="ew", pady=(0, 10))
+        
+        title_label = tk.Label(header_frame, text="⚙️ Методы переименования", 
+                              font=('Segoe UI', 12, 'bold'),
+                              bg=self.colors['bg_card'], fg=self.colors['text_primary'])
+        title_label.pack(anchor=tk.W)
+        
+        # Кнопки управления (вертикально, с названиями)
+        header_buttons = tk.Frame(header_frame, bg=self.colors['bg_card'])
+        header_buttons.pack(fill=tk.X, pady=(10, 0))
+        header_buttons.columnconfigure(0, weight=1)
+        
+        btn_add = self.create_rounded_button(
+            header_buttons, "➕ Добавить", lambda: self._add_method_from_window(),
+            self.colors['primary'], 'white',
+            font=('Segoe UI', 9, 'bold'), padx=10, pady=10,
+            active_bg=self.colors['primary_hover'])
+        btn_add.grid(row=0, column=0, sticky="ew", pady=(0, 5))
+        
+        btn_remove = self.create_rounded_button(
+            header_buttons, "➖ Удалить", lambda: self._remove_method_from_window(),
+            self.colors['primary_light'], 'white',
+            font=('Segoe UI', 9, 'bold'), padx=10, pady=10,
+            active_bg=self.colors['primary'])
+        btn_remove.grid(row=1, column=0, sticky="ew", pady=(0, 5))
+        
+        btn_clear = self.create_rounded_button(
+            header_buttons, "🗑️ Очистить", lambda: self._clear_methods_from_window(),
+            self.colors['danger'], 'white',
+            font=('Segoe UI', 9, 'bold'), padx=10, pady=10,
+            active_bg=self.colors['danger_hover'])
+        btn_clear.grid(row=2, column=0, sticky="ew")
+        
+        # Контент с двумя панелями
+        content_frame = tk.Frame(main_frame, bg=self.colors['bg_card'])
+        content_frame.grid(row=1, column=0, sticky="nsew")
+        content_frame.columnconfigure(0, weight=1)
+        content_frame.columnconfigure(1, weight=2)
+        content_frame.rowconfigure(0, weight=1)
+        
+        # Левая панель: список методов
+        list_panel = ttk.LabelFrame(content_frame, text="📋 Список", 
+                                   style='Card.TLabelframe', padding=8)
+        list_panel.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
+        list_panel.columnconfigure(0, weight=1)
+        list_panel.rowconfigure(0, weight=1)
+        
+        list_scroll = tk.Frame(list_panel, bg=self.colors['bg_card'])
+        list_scroll.grid(row=0, column=0, sticky="nsew")
+        list_scroll.columnconfigure(0, weight=1)
+        list_scroll.rowconfigure(0, weight=1)
+        
+        scrollbar = ttk.Scrollbar(list_scroll)
+        scrollbar.grid(row=0, column=1, sticky="ns")
+        
+        self.methods_window_listbox = tk.Listbox(list_scroll, font=('Segoe UI', 9),
+                                                bg='white', fg=self.colors['text_primary'],
+                                                selectbackground=self.colors['primary'],
+                                                selectforeground='white',
+                                                yscrollcommand=scrollbar.set)
+        self.methods_window_listbox.grid(row=0, column=0, sticky="nsew")
+        scrollbar.config(command=self.methods_window_listbox.yview)
+        self.methods_window_listbox.bind('<<ListboxSelect>>', 
+                                       lambda e: self._on_method_selected_in_window())
+        
+        self._update_methods_window_list()
+        
+        # Правая панель: настройки
+        settings_panel = ttk.LabelFrame(content_frame, text="⚙️ Настройки", 
+                                       style='Card.TLabelframe', padding=8)
+        settings_panel.grid(row=0, column=1, sticky="nsew")
+        settings_panel.columnconfigure(0, weight=1)
+        settings_panel.rowconfigure(1, weight=1)
+        
+        # Выбор типа метода
+        self.methods_window_method_var = tk.StringVar()
+        method_combo = ttk.Combobox(settings_panel,
+                                   textvariable=self.methods_window_method_var,
+                                   values=["Новое имя", "Добавить/Удалить", "Замена", 
+                                          "Регистр", "Нумерация", "Метаданные", 
+                                          "Регулярные выражения"],
+                                   state="readonly", width=18, font=('Segoe UI', 9))
+        method_combo.grid(row=0, column=0, sticky="ew", pady=(0, 8))
+        method_combo.current(0)
+        method_combo.bind("<<ComboboxSelected>>", 
+                         lambda e: self._on_method_type_selected_in_window())
+        
+        # Область настроек
+        settings_canvas = tk.Canvas(settings_panel, bg=self.colors['bg_card'], 
+                                   highlightthickness=0)
+        settings_scrollbar = ttk.Scrollbar(settings_panel, orient="vertical", 
+                                          command=settings_canvas.yview)
+        self.methods_window_settings_frame = tk.Frame(settings_canvas, 
+                                                      bg=self.colors['bg_card'])
+        
+        self.methods_window_settings_frame.bind(
+            "<Configure>",
+            lambda e: settings_canvas.configure(scrollregion=settings_canvas.bbox("all")))
+        
+        canvas_win = settings_canvas.create_window((0, 0), 
+                                                   window=self.methods_window_settings_frame, 
+                                                   anchor="nw")
+        
+        def on_canvas_configure(event):
+            if event.widget == settings_canvas:
+                try:
+                    settings_canvas.itemconfig(canvas_win, width=event.width)
+                except (AttributeError, tk.TclError):
+                    pass
+        
+        settings_canvas.bind('<Configure>', on_canvas_configure)
+        settings_canvas.configure(yscrollcommand=settings_scrollbar.set)
+        
+        self.bind_mousewheel(settings_canvas, settings_canvas)
+        self.bind_mousewheel(self.methods_window_settings_frame, settings_canvas)
+        
+        settings_canvas.grid(row=1, column=0, sticky="nsew")
+        settings_scrollbar.grid(row=1, column=1, sticky="ns")
+        
+        self._on_method_type_selected_in_window()
+        
+        # Кнопка применения
+        btn_apply = self.create_rounded_button(
+            main_frame, "✅ Применить", lambda: self._apply_methods_from_window(),
+            self.colors['success'], 'white',
+            font=('Segoe UI', 9, 'bold'), padx=12, pady=6,
+            active_bg=self.colors['success_hover'])
+        btn_apply.grid(row=2, column=0, sticky="ew", pady=(10, 0))
+        
+        def on_close():
+            try:
+                if window.winfo_exists():
+                    window.iconify()
+            except (AttributeError, tk.TclError):
+                pass
+        
+        window.protocol("WM_DELETE_WINDOW", on_close)
+    
+    def _update_methods_window_list(self):
+        """Обновление списка методов"""
+        if not hasattr(self, 'methods_window_listbox'):
+            return
+        self.methods_window_listbox.delete(0, tk.END)
+        for i, method in enumerate(self.current_methods):
+            name = self._get_method_display_name(method)
+            self.methods_window_listbox.insert(tk.END, f"{i+1}. {name}")
+    
+    def _get_method_display_name(self, method):
+        """Получение имени метода для отображения"""
+        if isinstance(method, NewNameMethod):
+            tpl = method.template[:25] + "..." if len(method.template) > 25 else method.template
+            return f"Новое имя: {tpl}"
+        elif isinstance(method, AddRemoveMethod):
+            return f"Добавить/Удалить ({'Добавить' if method.operation == 'add' else 'Удалить'})"
+        elif isinstance(method, ReplaceMethod):
+            return f"Замена: {method.find} → {method.replace}"
+        elif isinstance(method, CaseMethod):
+            case_names = {"lower": "строчные", "upper": "заглавные", 
+                         "capitalize": "первая заглавная", "title": "заглавные слова"}
+            return f"Регистр: {case_names.get(method.case_type, method.case_type)}"
+        elif isinstance(method, NumberingMethod):
+            return f"Нумерация (с {method.start}, шаг {method.step})"
+        elif isinstance(method, MetadataMethod):
+            return f"Метаданные: {method.tag}"
+        elif isinstance(method, RegexMethod):
+            return "Регулярные выражения"
+        return "Неизвестный метод"
+    
+    def _on_method_selected_in_window(self):
+        """Обработка выбора метода из списка"""
+        selection = self.methods_window_listbox.curselection()
+        if not selection:
+            return
+        index = selection[0]
+        if 0 <= index < len(self.current_methods):
+            method = self.current_methods[index]
+            self._load_method_settings(method)
+    
+    def _load_method_settings(self, method):
+        """Загрузка настроек метода"""
+        method_map = {
+            NewNameMethod: (0, "Новое имя"),
+            AddRemoveMethod: (1, "Добавить/Удалить"),
+            ReplaceMethod: (2, "Замена"),
+            CaseMethod: (3, "Регистр"),
+            NumberingMethod: (4, "Нумерация"),
+            MetadataMethod: (5, "Метаданные"),
+            RegexMethod: (6, "Регулярные выражения")
+        }
+        
+        for cls, (idx, name) in method_map.items():
+            if isinstance(method, cls):
+                self.methods_window_method_var.set(name)
+                break
+        
+        self._on_method_type_selected_in_window()
+    
+    def _on_method_type_selected_in_window(self, event=None):
+        """Обработка выбора типа метода"""
+        for widget in self.methods_window_settings_frame.winfo_children():
+            widget.destroy()
+        
+        method_name = self.methods_window_method_var.get()
+        method_creators = {
+            "Новое имя": self._create_new_name_settings,
+            "Добавить/Удалить": self._create_add_remove_settings,
+            "Замена": self._create_replace_settings,
+            "Регистр": self._create_case_settings,
+            "Нумерация": self._create_numbering_settings,
+            "Метаданные": self._create_metadata_settings,
+            "Регулярные выражения": self._create_regex_settings
+        }
+        
+        creator = method_creators.get(method_name)
+        if creator:
+            creator()
+    
+    def _create_new_name_settings(self):
+        """Настройки для метода Новое имя"""
+        btn = self.create_rounded_button(
+            self.methods_window_settings_frame, "📋 Быстрые шаблоны", 
+            self.show_quick_templates, self.colors['primary'], 'white',
+            font=('Segoe UI', 8), padx=8, pady=4, active_bg=self.colors['primary_hover'])
+        btn.pack(fill=tk.X, pady=(0, 8))
+        
+        tk.Label(self.methods_window_settings_frame, text="Шаблон:", 
+                font=('Segoe UI', 9), bg=self.colors['bg_card'], 
+                fg=self.colors['text_primary']).pack(anchor=tk.W, pady=(0, 4))
+        
+        self.methods_window_new_name_template = tk.StringVar()
+        tk.Entry(self.methods_window_settings_frame,
+                textvariable=self.methods_window_new_name_template,
+                font=('Segoe UI', 9), bg='white', fg=self.colors['text_primary'],
+                relief=tk.SOLID, borderwidth=1).pack(fill=tk.X, pady=(0, 8))
+        
+        num_frame = tk.Frame(self.methods_window_settings_frame, bg=self.colors['bg_card'])
+        num_frame.pack(fill=tk.X, pady=(0, 8))
+        
+        tk.Label(num_frame, text="Начальный номер:", font=('Segoe UI', 8),
+                bg=self.colors['bg_card'], fg=self.colors['text_primary']).pack(side=tk.LEFT)
+        
+        self.methods_window_new_name_start_number = tk.StringVar(value="1")
+        tk.Entry(num_frame, textvariable=self.methods_window_new_name_start_number,
+                font=('Segoe UI', 8), bg='white', fg=self.colors['text_primary'],
+                relief=tk.SOLID, borderwidth=1, width=8).pack(side=tk.LEFT, padx=(5, 0))
+    
+    def _create_add_remove_settings(self):
+        """Настройки для метода Добавить/Удалить"""
+        self.methods_window_add_remove_op = tk.StringVar(value="add")
+        op_frame = tk.Frame(self.methods_window_settings_frame, bg=self.colors['bg_card'])
+        op_frame.pack(fill=tk.X, pady=(0, 8))
+        
+        tk.Radiobutton(op_frame, text="Добавить", variable=self.methods_window_add_remove_op,
+                      value="add", bg=self.colors['bg_card'], fg=self.colors['text_primary'],
+                      font=('Segoe UI', 8)).pack(side=tk.LEFT, padx=(0, 10))
+        tk.Radiobutton(op_frame, text="Удалить", variable=self.methods_window_add_remove_op,
+                      value="remove", bg=self.colors['bg_card'], fg=self.colors['text_primary'],
+                      font=('Segoe UI', 8)).pack(side=tk.LEFT)
+        
+        tk.Label(self.methods_window_settings_frame, text="Текст:", 
+                font=('Segoe UI', 9), bg=self.colors['bg_card'], 
+                fg=self.colors['text_primary']).pack(anchor=tk.W, pady=(0, 4))
+        
+        self.methods_window_add_remove_text = tk.StringVar()
+        tk.Entry(self.methods_window_settings_frame,
+                textvariable=self.methods_window_add_remove_text,
+                font=('Segoe UI', 9), bg='white', fg=self.colors['text_primary'],
+                relief=tk.SOLID, borderwidth=1).pack(fill=tk.X, pady=(0, 8))
+        
+        self.methods_window_add_remove_pos = tk.StringVar(value="before")
+        pos_frame = tk.Frame(self.methods_window_settings_frame, bg=self.colors['bg_card'])
+        pos_frame.pack(fill=tk.X)
+        
+        tk.Radiobutton(pos_frame, text="Перед", variable=self.methods_window_add_remove_pos,
+                      value="before", bg=self.colors['bg_card'], fg=self.colors['text_primary'],
+                      font=('Segoe UI', 8)).pack(side=tk.LEFT, padx=(0, 10))
+        tk.Radiobutton(pos_frame, text="После", variable=self.methods_window_add_remove_pos,
+                      value="after", bg=self.colors['bg_card'], fg=self.colors['text_primary'],
+                      font=('Segoe UI', 8)).pack(side=tk.LEFT)
+    
+    def _create_replace_settings(self):
+        """Настройки для метода Замена"""
+        tk.Label(self.methods_window_settings_frame, text="Найти:", 
+                font=('Segoe UI', 9), bg=self.colors['bg_card'], 
+                fg=self.colors['text_primary']).pack(anchor=tk.W, pady=(0, 4))
+        
+        self.methods_window_replace_find = tk.StringVar()
+        tk.Entry(self.methods_window_settings_frame,
+                textvariable=self.methods_window_replace_find,
+                font=('Segoe UI', 9), bg='white', fg=self.colors['text_primary'],
+                relief=tk.SOLID, borderwidth=1).pack(fill=tk.X, pady=(0, 8))
+        
+        tk.Label(self.methods_window_settings_frame, text="Заменить на:", 
+                font=('Segoe UI', 9), bg=self.colors['bg_card'], 
+                fg=self.colors['text_primary']).pack(anchor=tk.W, pady=(0, 4))
+        
+        self.methods_window_replace_with = tk.StringVar()
+        tk.Entry(self.methods_window_settings_frame,
+                textvariable=self.methods_window_replace_with,
+                font=('Segoe UI', 9), bg='white', fg=self.colors['text_primary'],
+                relief=tk.SOLID, borderwidth=1).pack(fill=tk.X, pady=(0, 8))
+        
+        self.methods_window_replace_case = tk.BooleanVar(value=False)
+        tk.Checkbutton(self.methods_window_settings_frame, text="Учитывать регистр",
+                      variable=self.methods_window_replace_case,
+                      bg=self.colors['bg_card'], fg=self.colors['text_primary'],
+                      font=('Segoe UI', 8)).pack(anchor=tk.W)
+    
+    def _create_case_settings(self):
+        """Настройки для метода Регистр"""
+        self.methods_window_case_type = tk.StringVar(value="lower")
+        case_frame = tk.Frame(self.methods_window_settings_frame, bg=self.colors['bg_card'])
+        case_frame.pack(fill=tk.X)
+        
+        types = [("lower", "Строчные"), ("upper", "Заглавные"),
+                ("capitalize", "Первая заглавная"), ("title", "Заглавные слова")]
+        
+        for value, text in types:
+            tk.Radiobutton(case_frame, text=text, variable=self.methods_window_case_type,
+                          value=value, bg=self.colors['bg_card'], fg=self.colors['text_primary'],
+                          font=('Segoe UI', 8)).pack(anchor=tk.W)
+    
+    def _create_numbering_settings(self):
+        """Настройки для метода Нумерация"""
+        params_frame = tk.Frame(self.methods_window_settings_frame, bg=self.colors['bg_card'])
+        params_frame.pack(fill=tk.X, pady=(0, 8))
+        
+        tk.Label(params_frame, text="С:", font=('Segoe UI', 8),
+                bg=self.colors['bg_card'], fg=self.colors['text_primary']).pack(side=tk.LEFT)
+        self.methods_window_numbering_start = tk.StringVar(value="1")
+        tk.Entry(params_frame, textvariable=self.methods_window_numbering_start,
+                font=('Segoe UI', 8), bg='white', fg=self.colors['text_primary'],
+                relief=tk.SOLID, borderwidth=1, width=6).pack(side=tk.LEFT, padx=5)
+        
+        tk.Label(params_frame, text="Шаг:", font=('Segoe UI', 8),
+                bg=self.colors['bg_card'], fg=self.colors['text_primary']).pack(side=tk.LEFT)
+        self.methods_window_numbering_step = tk.StringVar(value="1")
+        tk.Entry(params_frame, textvariable=self.methods_window_numbering_step,
+                font=('Segoe UI', 8), bg='white', fg=self.colors['text_primary'],
+                relief=tk.SOLID, borderwidth=1, width=6).pack(side=tk.LEFT, padx=5)
+        
+        tk.Label(params_frame, text="Цифр:", font=('Segoe UI', 8),
+                bg=self.colors['bg_card'], fg=self.colors['text_primary']).pack(side=tk.LEFT)
+        self.methods_window_numbering_digits = tk.StringVar(value="3")
+        tk.Entry(params_frame, textvariable=self.methods_window_numbering_digits,
+                font=('Segoe UI', 8), bg='white', fg=self.colors['text_primary'],
+                relief=tk.SOLID, borderwidth=1, width=6).pack(side=tk.LEFT, padx=5)
+        
+        tk.Label(self.methods_window_settings_frame, text="Формат ({n} для номера):", 
+                font=('Segoe UI', 8), bg=self.colors['bg_card'], 
+                fg=self.colors['text_primary']).pack(anchor=tk.W, pady=(0, 4))
+        
+        self.methods_window_numbering_format = tk.StringVar(value="({n})")
+        tk.Entry(self.methods_window_settings_frame,
+                textvariable=self.methods_window_numbering_format,
+                font=('Segoe UI', 8), bg='white', fg=self.colors['text_primary'],
+                relief=tk.SOLID, borderwidth=1).pack(fill=tk.X, pady=(0, 8))
+        
+        self.methods_window_numbering_pos = tk.StringVar(value="end")
+        pos_frame = tk.Frame(self.methods_window_settings_frame, bg=self.colors['bg_card'])
+        pos_frame.pack(fill=tk.X)
+        
+        tk.Radiobutton(pos_frame, text="В начале", variable=self.methods_window_numbering_pos,
+                      value="start", bg=self.colors['bg_card'], fg=self.colors['text_primary'],
+                      font=('Segoe UI', 8)).pack(side=tk.LEFT, padx=(0, 10))
+        tk.Radiobutton(pos_frame, text="В конце", variable=self.methods_window_numbering_pos,
+                      value="end", bg=self.colors['bg_card'], fg=self.colors['text_primary'],
+                      font=('Segoe UI', 8)).pack(side=tk.LEFT)
+    
+    def _create_metadata_settings(self):
+        """Настройки для метода Метаданные"""
+        tk.Label(self.methods_window_settings_frame, text="Тег:", 
+                font=('Segoe UI', 9), bg=self.colors['bg_card'], 
+                fg=self.colors['text_primary']).pack(anchor=tk.W, pady=(0, 4))
+        
+        self.methods_window_metadata_tag = tk.StringVar()
+        tk.Entry(self.methods_window_settings_frame,
+                textvariable=self.methods_window_metadata_tag,
+                font=('Segoe UI', 9), bg='white', fg=self.colors['text_primary'],
+                relief=tk.SOLID, borderwidth=1).pack(fill=tk.X, pady=(0, 8))
+        
+        tk.Label(self.methods_window_settings_frame, 
+                text="Примеры: {width}x{height}, {date_created}",
+                font=('Segoe UI', 7), bg=self.colors['bg_card'], 
+                fg=self.colors['text_muted']).pack(anchor=tk.W, pady=(0, 8))
+        
+        self.methods_window_metadata_pos = tk.StringVar(value="end")
+        pos_frame = tk.Frame(self.methods_window_settings_frame, bg=self.colors['bg_card'])
+        pos_frame.pack(fill=tk.X)
+        
+        tk.Radiobutton(pos_frame, text="В начале", variable=self.methods_window_metadata_pos,
+                      value="start", bg=self.colors['bg_card'], fg=self.colors['text_primary'],
+                      font=('Segoe UI', 8)).pack(side=tk.LEFT, padx=(0, 10))
+        tk.Radiobutton(pos_frame, text="В конце", variable=self.methods_window_metadata_pos,
+                      value="end", bg=self.colors['bg_card'], fg=self.colors['text_primary'],
+                      font=('Segoe UI', 8)).pack(side=tk.LEFT)
+    
+    def _create_regex_settings(self):
+        """Настройки для метода Регулярные выражения"""
+        tk.Label(self.methods_window_settings_frame, text="Паттерн:", 
+                font=('Segoe UI', 9), bg=self.colors['bg_card'], 
+                fg=self.colors['text_primary']).pack(anchor=tk.W, pady=(0, 4))
+        
+        self.methods_window_regex_pattern = tk.StringVar()
+        tk.Entry(self.methods_window_settings_frame,
+                textvariable=self.methods_window_regex_pattern,
+                font=('Segoe UI', 9), bg='white', fg=self.colors['text_primary'],
+                relief=tk.SOLID, borderwidth=1).pack(fill=tk.X, pady=(0, 8))
+        
+        tk.Label(self.methods_window_settings_frame, text="Заменить на:", 
+                font=('Segoe UI', 9), bg=self.colors['bg_card'], 
+                fg=self.colors['text_primary']).pack(anchor=tk.W, pady=(0, 4))
+        
+        self.methods_window_regex_replace = tk.StringVar()
+        tk.Entry(self.methods_window_settings_frame,
+                textvariable=self.methods_window_regex_replace,
+                font=('Segoe UI', 9), bg='white', fg=self.colors['text_primary'],
+                relief=tk.SOLID, borderwidth=1).pack(fill=tk.X, pady=(0, 8))
+        
+        tk.Label(self.methods_window_settings_frame, 
+                text="Группы: \\1, \\2 и т.д.",
+                font=('Segoe UI', 7), bg=self.colors['bg_card'], 
+                fg=self.colors['text_muted']).pack(anchor=tk.W)
+    
+    def _add_method_from_window(self):
+        """Добавление метода"""
+        method_name = self.methods_window_method_var.get()
+        
+        try:
+            method = None
+            if method_name == "Новое имя":
+                template = self.methods_window_new_name_template.get()
+                if not template:
+                    raise ValueError("Введите шаблон")
+                start = int(self.methods_window_new_name_start_number.get() or "1")
+                method = NewNameMethod(template, self.metadata_extractor, start)
+            elif method_name == "Добавить/Удалить":
+                method = AddRemoveMethod(
+                    self.methods_window_add_remove_op.get(),
+                    self.methods_window_add_remove_text.get(),
+                    self.methods_window_add_remove_pos.get()
+                )
+            elif method_name == "Замена":
+                method = ReplaceMethod(
+                    self.methods_window_replace_find.get(),
+                    self.methods_window_replace_with.get(),
+                    self.methods_window_replace_case.get()
+                )
+            elif method_name == "Регистр":
+                method = CaseMethod(self.methods_window_case_type.get(), "name")
+            elif method_name == "Нумерация":
+                method = NumberingMethod(
+                    int(self.methods_window_numbering_start.get() or "1"),
+                    int(self.methods_window_numbering_step.get() or "1"),
+                    int(self.methods_window_numbering_digits.get() or "3"),
+                    self.methods_window_numbering_format.get(),
+                    self.methods_window_numbering_pos.get()
+                )
+            elif method_name == "Метаданные":
+                if not self.metadata_extractor:
+                    messagebox.showerror("Ошибка", "Модуль метаданных недоступен")
+                    return
+                method = MetadataMethod(
+                    self.methods_window_metadata_tag.get(),
+                    self.methods_window_metadata_pos.get(),
+                    self.metadata_extractor
+                )
+            elif method_name == "Регулярные выражения":
+                method = RegexMethod(
+                    self.methods_window_regex_pattern.get(),
+                    self.methods_window_regex_replace.get()
+                )
+            
+            if method:
+                self.current_methods.append(method)
+                self.methods_listbox.insert(tk.END, method_name)
+                self._update_methods_window_list()
+                self.log(f"Добавлен метод: {method_name}")
+                self.apply_methods()
+        except Exception as e:
+            messagebox.showerror("Ошибка", f"Не удалось добавить метод: {e}")
+    
+    def _remove_method_from_window(self):
+        """Удаление метода"""
+        selection = self.methods_window_listbox.curselection()
+        if not selection:
+            messagebox.showwarning("Предупреждение", "Выберите метод")
+            return
+        
+        index = selection[0]
+        if 0 <= index < len(self.current_methods):
+            self.current_methods.pop(index)
+            self.methods_listbox.delete(index)
+            self._update_methods_window_list()
+            self.log(f"Удален метод: {index + 1}")
+            self.apply_methods()
+    
+    def _clear_methods_from_window(self):
+        """Очистка всех методов"""
+        if self.current_methods:
+            if messagebox.askyesno("Подтверждение", "Очистить все методы?"):
+                self.current_methods.clear()
+                self.methods_listbox.delete(0, tk.END)
+                self._update_methods_window_list()
+                self.log("Все методы очищены")
+    
+    def _apply_methods_from_window(self):
+        """Применение методов"""
+        self.apply_methods()
+        messagebox.showinfo("Готово", "Методы применены!")
     
     def open_tabs_window(self, tab_name='log'):
         """Открытие окна с вкладками (логи, настройки, о программе, поддержка)"""
@@ -1020,6 +1756,9 @@ class FileRenamerApp:
         window.geometry("800x600")
         window.minsize(600, 500)
         window.configure(bg=self.colors['bg_card'])
+        
+        # Установка иконки
+        self.set_icon(window)
         
         # Настройка адаптивности окна
         window.columnconfigure(0, weight=1)
@@ -1339,20 +2078,19 @@ class FileRenamerApp:
         content_frame.columnconfigure(0, weight=1)
         scrollable_frame.configure(padx=40, pady=40)
         
-        # Логотип/Название
-        title_label = tk.Label(content_frame, text="📝 Назови", 
-                              font=('Segoe UI', 32, 'bold'),
-                              bg=self.colors['bg_card'], 
-                              fg=self.colors['primary'])
-        title_label.pack(pady=(10, 5))
-        
-        # Версия
-        version_label = tk.Label(content_frame, 
-                                text="Версия 1.0.0",
-                                font=('Segoe UI', 11),
-                                bg=self.colors['bg_card'], 
-                                fg=self.colors['text_secondary'])
-        version_label.pack(pady=(0, 20))
+        # Иконка программы
+        try:
+            icon_path = os.path.join(os.path.dirname(__file__), "materials", "icon", "1000x1000.png")
+            if os.path.exists(icon_path) and HAS_PIL:
+                img = Image.open(icon_path)
+                # Уменьшаем размер для отображения
+                img = img.resize((128, 128), Image.Resampling.LANCZOS)
+                photo = ImageTk.PhotoImage(img)
+                icon_label = tk.Label(content_frame, image=photo, bg=self.colors['bg_card'])
+                icon_label.image = photo  # Сохраняем ссылку
+                icon_label.pack(pady=(10, 20))
+        except Exception as e:
+            print(f"Ошибка загрузки иконки: {e}")  # Отладочная информация
         
         # Описание программы - карточка
         about_card = ttk.LabelFrame(content_frame, text="📄 О программе", 
@@ -1967,20 +2705,19 @@ class FileRenamerApp:
         content_frame.columnconfigure(0, weight=1)
         scrollable_frame.configure(padx=40, pady=40)
         
-        # Логотип/Название
-        title_label = tk.Label(content_frame, text="📝 Назови", 
-                              font=('Segoe UI', 32, 'bold'),
-                              bg=self.colors['bg_card'], 
-                              fg=self.colors['primary'])
-        title_label.pack(pady=(10, 5))
-        
-        # Версия
-        version_label = tk.Label(content_frame, 
-                                text="Версия 1.0.0",
-                                font=('Segoe UI', 11),
-                                bg=self.colors['bg_card'], 
-                                fg=self.colors['text_secondary'])
-        version_label.pack(pady=(0, 20))
+        # Иконка программы
+        try:
+            icon_path = os.path.join(os.path.dirname(__file__), "materials", "icon", "1000x1000.png")
+            if os.path.exists(icon_path) and HAS_PIL:
+                img = Image.open(icon_path)
+                # Уменьшаем размер для отображения
+                img = img.resize((128, 128), Image.Resampling.LANCZOS)
+                photo = ImageTk.PhotoImage(img)
+                icon_label = tk.Label(content_frame, image=photo, bg=self.colors['bg_card'])
+                icon_label.image = photo  # Сохраняем ссылку
+                icon_label.pack(pady=(10, 20))
+        except Exception as e:
+            print(f"Ошибка загрузки иконки: {e}")  # Отладочная информация
         
         # Описание программы - карточка
         about_card = ttk.LabelFrame(content_frame, text="📄 О программе", 
@@ -2241,6 +2978,77 @@ class FileRenamerApp:
         self.root.bind('<Delete>', lambda e: self.delete_selected())
         self.root.bind('<Control-o>', lambda e: self.add_folder())
     
+    def setup_tray_icon(self):
+        """Настройка трей-иконки"""
+        if not HAS_PYSTRAY:
+            return
+        
+        try:
+            # Загружаем иконку для трея
+            icon_path = os.path.join(os.path.dirname(__file__), "materials", "icon", "1000x1000.png")
+            if os.path.exists(icon_path) and HAS_PIL:
+                # Открываем иконку и изменяем размер для трея (обычно 16x16 или 32x32)
+                img = PILImage.open(icon_path)
+                img = img.resize((64, 64), PILImage.Resampling.LANCZOS)
+                
+                # Создаем меню для трей-иконки
+                menu = pystray.Menu(
+                    item('Показать', self.show_window_from_tray),
+                    item('Выход', self.quit_from_tray)
+                )
+                
+                # Создаем трей-иконку
+                self.tray_icon = pystray.Icon("Назови", img, "Назови", menu)
+                
+                # Запускаем трей-иконку в отдельном потоке
+                self.tray_thread = threading.Thread(target=self.tray_icon.run, daemon=True)
+                self.tray_thread.start()
+        except Exception as e:
+            print(f"Ошибка при создании трей-иконки: {e}")
+    
+    def show_window_from_tray(self, icon=None, item=None):
+        """Показать окно из трей-иконки"""
+        self.root.after(0, self.show_window)
+    
+    def show_window(self):
+        """Показать главное окно"""
+        try:
+            self.root.deiconify()
+            self.root.lift()
+            self.root.focus_force()
+            # Пытаемся развернуть окно, если оно было свернуто
+            try:
+                self.root.state('normal')
+            except:
+                pass
+        except Exception:
+            pass
+    
+    def quit_from_tray(self, icon=None, item=None):
+        """Выход из приложения через трей"""
+        if self.tray_icon:
+            self.tray_icon.stop()
+        self.root.after(0, self.quit_app)
+    
+    def quit_app(self):
+        """Полный выход из приложения"""
+        if self.tray_icon:
+            try:
+                self.tray_icon.stop()
+            except:
+                pass
+        self.root.quit()
+        self.root.destroy()
+    
+    def on_close_window(self):
+        """Обработчик закрытия главного окна"""
+        if self.minimize_to_tray and HAS_PYSTRAY and self.tray_icon:
+            # Сворачиваем в трей
+            self.root.withdraw()
+        else:
+            # Обычное закрытие
+            self.quit_app()
+    
     def setup_drag_drop(self):
         """Настройка drag and drop для файлов из проводника"""
         # Используем tkinterdnd2 если доступно
@@ -2276,8 +3084,8 @@ class FileRenamerApp:
                     if hasattr(list_frame, 'drop_target_register'):
                         list_frame.drop_target_register(DND_FILES)
                         list_frame.dnd_bind('<<Drop>>', self._on_drop_files)
-                except Exception as e:
-                    print(f"DEBUG: Ошибка регистрации панелей для DnD: {e}")
+                except Exception:
+                    pass  # Игнорируем ошибки регистрации панелей
                 
                 # Регистрируем таблицу для перетаскивания файлов
                 # ttk.Treeview может не поддерживать напрямую, но попробуем
@@ -2285,22 +3093,19 @@ class FileRenamerApp:
                     if hasattr(self.tree, 'drop_target_register'):
                         self.tree.drop_target_register(DND_FILES)
                         self.tree.dnd_bind('<<Drop>>', self._on_drop_files)
-                except Exception as e:
-                    print(f"DEBUG: Treeview не поддерживает DnD напрямую: {e}")
-                    # Это нормально, главное что root и панели зарегистрированы
+                except Exception:
+                    pass  # Это нормально, главное что root и панели зарегистрированы
                 
                 # Логируем успешную настройку (только при первом запуске)
                 if not hasattr(self, '_drag_drop_logged'):
                     msg = "✅ Drag and drop файлов включен - можно перетаскивать файлы из проводника"
-                    print(f"DEBUG: {msg}")
                     self.log(msg)
                     self._drag_drop_logged = True
                 return
             except Exception as e:
                 error_msg = f"Ошибка настройки drag and drop (tkinterdnd2): {e}"
-                print(f"DEBUG ERROR: {error_msg}")
                 import traceback
-                print(traceback.format_exc())
+                traceback.print_exc()  # Выводим только в консоль для отладки
                 if not hasattr(self, '_drag_drop_logged'):
                     self.log(error_msg)
                     self.log("💡 Установите библиотеку: pip install tkinterdnd2")
@@ -2357,15 +3162,8 @@ class FileRenamerApp:
             processed_files = []
             
             # Логируем исходные данные для отладки
-            if data:
-                data_preview = data[:200] + ("..." if len(data) > 200 else "")
-                log_msg = f"Получено данных: {len(data)} символов"
-                print(f"DEBUG: {log_msg}")
-                self.log(log_msg)
-                self.log(f"Начало данных: {data_preview}")
-            else:
+            if not data:
                 error_msg = "⚠️ Данные не получены из события перетаскивания"
-                print(f"DEBUG: {error_msg}")
                 self.log(error_msg)
                 return
             
@@ -2485,8 +3283,6 @@ class FileRenamerApp:
     
     def _process_dropped_files(self, files):
         """Обработка перетащенных файлов"""
-        print(f"DEBUG: _process_dropped_files вызван с {len(files)} файлами")
-        
         if not files:
             self.log("⚠️ Список файлов пуст")
             return
@@ -2513,11 +3309,9 @@ class FileRenamerApp:
             msg = f"✅ Добавлено файлов перетаскиванием: {actual_count}"
             if skipped > 0:
                 msg += f" (пропущено: {skipped})"
-            print(f"DEBUG: {msg}. Всего файлов в списке: {len(self.files)}")
             self.log(msg)
         else:
             msg = "⚠️ Не удалось добавить файлы (возможно, все файлы уже в списке)"
-            print(f"DEBUG: {msg}. Всего файлов в списке: {len(self.files)}")
             self.log(msg)
     
     def setup_treeview_drag_drop(self):
@@ -2714,10 +3508,7 @@ class FileRenamerApp:
     
     def add_file(self, file_path: str):
         """Добавление одного файла в список"""
-        print(f"DEBUG add_file: проверяю файл {file_path}")
-        
         if not os.path.isfile(file_path):
-            print(f"DEBUG add_file: {file_path} не является файлом")
             return
         
         # Нормализуем путь для проверки дубликатов
@@ -2728,7 +3519,6 @@ class FileRenamerApp:
             existing_path = os.path.normpath(os.path.abspath(existing_file.get('full_path', '')))
             if existing_path == file_path:
                 # Файл уже есть в списке, пропускаем
-                print(f"DEBUG add_file: файл {file_path} уже в списке, пропускаю")
                 return
         
         path_obj = Path(file_path)
@@ -2746,12 +3536,6 @@ class FileRenamerApp:
         }
         
         self.files.append(file_data)
-        # Не добавляем сразу в таблицу - это будет сделано через refresh_treeview
-        # item = self.tree.insert("", tk.END, values=(
-        #     old_name, old_name, extension, path, 'Готов'
-        # ), tags=('ready',))
-        
-        print(f"DEBUG add_file: файл {old_name} добавлен в список. Всего файлов: {len(self.files)}")
     
     def clear_files(self):
         """Очистка списка файлов"""
@@ -2797,6 +3581,13 @@ class FileRenamerApp:
         
         method_name = self.method_var.get()
         
+        # Показываем/скрываем кнопки шаблонов в зависимости от метода
+        if hasattr(self, 'template_buttons_frame'):
+            if method_name == "Новое имя":
+                self.template_buttons_frame.grid()
+            else:
+                self.template_buttons_frame.grid_remove()
+        
         if method_name == "Новое имя":
             self.create_new_name_settings()
         elif method_name == "Добавить/Удалить":
@@ -2826,7 +3617,7 @@ class FileRenamerApp:
         ).pack(anchor=tk.W)
         
         ttk.Label(self.settings_frame, text="Текст:").pack(anchor=tk.W, pady=(5, 0))
-        self.add_remove_text = ttk.Entry(self.settings_frame, width=30)
+        self.add_remove_text = ttk.Entry(self.settings_frame, width=18)
         self.add_remove_text.pack(fill=tk.X, pady=2)
         
         ttk.Label(self.settings_frame, text="Позиция:").pack(anchor=tk.W, pady=(5, 0))
@@ -2884,78 +3675,158 @@ class FileRenamerApp:
         image_exts = ['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.tiff', '.webp', '.heic']
         if main_ext in image_exts:
             templates.extend([
-                ("Фото_{n}", "Фото_1, Фото_2, ..."),
-                ("Изображение_{n}", "Изображение_1, Изображение_2, ..."),
+                ("Фото_{n:03d}", "Фото_001, Фото_002, ..."),
                 ("IMG_{n:03d}", "IMG_001, IMG_002, ..."),
-                ("Photo_{n}", "Photo_1, Photo_2, ..."),
-                ("{date_created}_{n}", "2024-01-01_1, 2024-01-01_2, ..."),
+                ("{date_created}_Фото_{n:02d}", "2024-01-01_Фото_01, ..."),
+                ("{width}x{height}_{n}", "1920x1080_1, ..."),
+                ("Photo_{n:04d}", "Photo_0001, Photo_0002, ..."),
+                ("Изображение_{n}", "Изображение_1, Изображение_2, ..."),
             ])
         
         # Шаблоны для документов
         doc_exts = ['.pdf', '.doc', '.docx', '.txt', '.rtf', '.odt']
         if main_ext in doc_exts:
             templates.extend([
-                ("Документ_{n}", "Документ_1, Документ_2, ..."),
+                ("Документ_{n:03d}", "Документ_001, Документ_002, ..."),
                 ("Doc_{n:03d}", "Doc_001, Doc_002, ..."),
-                ("Файл_{n}", "Файл_1, Файл_2, ..."),
+                ("{date_created}_Документ_{n}", "2024-01-01_Документ_1, ..."),
+                ("Файл_{n:02d}", "Файл_01, Файл_02, ..."),
+                ("Document_{n:04d}", "Document_0001, ..."),
             ])
         
         # Шаблоны для видео
         video_exts = ['.mp4', '.avi', '.mkv', '.mov', '.wmv', '.flv', '.webm']
         if main_ext in video_exts:
             templates.extend([
-                ("Видео_{n}", "Видео_1, Видео_2, ..."),
+                ("Видео_{n:03d}", "Видео_001, Видео_002, ..."),
                 ("Video_{n:03d}", "Video_001, Video_002, ..."),
-                ("Clip_{n}", "Clip_1, Clip_2, ..."),
+                ("{date_created}_Видео_{n}", "2024-01-01_Видео_1, ..."),
+                ("Clip_{n:02d}", "Clip_01, Clip_02, ..."),
+                ("Movie_{n:04d}", "Movie_0001, Movie_0002, ..."),
             ])
         
         # Шаблоны для аудио
         audio_exts = ['.mp3', '.wav', '.flac', '.aac', '.ogg', '.m4a']
         if main_ext in audio_exts:
             templates.extend([
-                ("Аудио_{n}", "Аудио_1, Аудио_2, ..."),
+                ("Аудио_{n:03d}", "Аудио_001, Аудио_002, ..."),
                 ("Audio_{n:03d}", "Audio_001, Audio_002, ..."),
                 ("Track_{n:02d}", "Track_01, Track_02, ..."),
+                ("{date_created}_Трек_{n}", "2024-01-01_Трек_1, ..."),
+                ("Song_{n:04d}", "Song_0001, Song_0002, ..."),
+            ])
+        
+        # Шаблоны для архивов
+        archive_exts = ['.zip', '.rar', '.7z', '.tar', '.gz', '.bz2']
+        if main_ext in archive_exts:
+            templates.extend([
+                ("Архив_{n:03d}", "Архив_001, Архив_002, ..."),
+                ("Archive_{n:03d}", "Archive_001, Archive_002, ..."),
+                ("{date_created}_Архив_{n}", "2024-01-01_Архив_1, ..."),
+                ("Backup_{n:02d}", "Backup_01, Backup_02, ..."),
+            ])
+        
+        # Шаблоны для таблиц и данных
+        data_exts = ['.xlsx', '.xls', '.csv', '.json', '.xml']
+        if main_ext in data_exts:
+            templates.extend([
+                ("Данные_{n:03d}", "Данные_001, Данные_002, ..."),
+                ("Data_{n:03d}", "Data_001, Data_002, ..."),
+                ("{date_created}_Данные_{n}", "2024-01-01_Данные_1, ..."),
+                ("Table_{n:02d}", "Table_01, Table_02, ..."),
             ])
         
         # Универсальные шаблоны
         templates.extend([
-            ("Файл_{n}", "Файл_1, Файл_2, ..."),
-            ("{n}", "1, 2, 3, ..."),
+            ("Файл_{n:03d}", "Файл_001, Файл_002, ..."),
+            ("{n:04d}", "0001, 0002, 0003, ..."),
             ("Новый_{n:03d}", "Новый_001, Новый_002, ..."),
+            ("{date_created}_{n:02d}", "2024-01-01_01, 2024-01-01_02, ..."),
+            ("{date_modified}_{name}", "2024-01-01_старое_имя, ..."),
+            ("{name}_{n:03d}", "старое_имя_001, старое_имя_002, ..."),
+            ("{n:02d}_{name}", "01_старое_имя, 02_старое_имя, ..."),
         ])
         
         return templates
     
     def create_new_name_settings(self):
         """Создание настроек для метода Новое имя"""
-        # Кнопка быстрых шаблонов
-        quick_frame = tk.Frame(self.settings_frame, bg=self.colors['bg_card'])
-        quick_frame.pack(fill=tk.X, pady=(0, 15))
-        
-        btn_quick = self.create_rounded_button(
-            quick_frame, "📋 Быстрые шаблоны", self.show_quick_templates,
-            self.colors['primary'], 'white',
-            font=('Segoe UI', 9, 'bold'), padx=10, pady=6,
-            active_bg=self.colors['primary_hover'])
-        btn_quick.pack(fill=tk.X)
+        # Показываем кнопки шаблонов в общей группе кнопок
+        if hasattr(self, 'template_buttons_frame'):
+            self.template_buttons_frame.grid()
         
         # Поле ввода шаблона
-        template_label = tk.Label(self.settings_frame, text="✏️ Новое имя (шаблон):", 
+        template_label_frame = tk.Frame(self.settings_frame, bg=self.colors['bg_card'])
+        template_label_frame.pack(fill=tk.X, pady=(0, 10))
+        
+        template_label = tk.Label(template_label_frame, text="✏️ Новое имя (шаблон):", 
                                  font=('Segoe UI', 10, 'bold'),
                                  bg=self.colors['bg_card'], fg=self.colors['text_primary'])
-        template_label.pack(anchor=tk.W, pady=(0, 10))
+        template_label.pack(side=tk.LEFT)
         
-        self.new_name_template = ttk.Entry(self.settings_frame, width=30, font=('Segoe UI', 10))
+        self.new_name_template = ttk.Entry(self.settings_frame, width=18, font=('Segoe UI', 9))
         self.new_name_template.pack(fill=tk.X, pady=(0, 12))
         
-        # Кнопка применения шаблона
-        apply_template_btn = self.create_rounded_button(
-            self.settings_frame, "✅ Применить шаблон", self.apply_template_quick,
-            self.colors['success'], 'white',
-            font=('Segoe UI', 9, 'bold'), padx=10, pady=6,
-            active_bg=self.colors['success_hover'])
-        apply_template_btn.pack(fill=tk.X, pady=(0, 15))
+        # Настройка начального номера
+        number_frame = tk.Frame(self.settings_frame, bg=self.colors['bg_card'])
+        number_frame.pack(fill=tk.X, pady=(0, 12))
+        
+        number_label = tk.Label(number_frame, text="🔢 Начальный номер для {n}:", 
+                               font=('Segoe UI', 10, 'bold'),
+                               bg=self.colors['bg_card'], fg=self.colors['text_primary'])
+        number_label.pack(side=tk.LEFT, padx=(0, 10))
+        
+        self.new_name_start_number = ttk.Entry(number_frame, width=10, font=('Segoe UI', 10))
+        self.new_name_start_number.insert(0, "1")
+        self.new_name_start_number.pack(side=tk.LEFT, padx=(0, 5))
+        
+        # Подсказка
+        hint_label = tk.Label(number_frame, 
+                             text="(для {n}, {n:02d}, {n:03d} и т.д.)",
+                             font=('Segoe UI', 9),
+                             bg=self.colors['bg_card'], 
+                             fg=self.colors['text_secondary'])
+        hint_label.pack(side=tk.LEFT)
+        
+        # Автоматическое применение при изменении шаблона или начального номера
+        # Используем переменную для отслеживания таймера, чтобы избежать множественных вызовов
+        if not hasattr(self, '_template_change_timer'):
+            self._template_change_timer = None
+        
+        def on_template_change(event=None):
+            # Отменяем предыдущий таймер, если он есть
+            if hasattr(self, '_template_change_timer') and self._template_change_timer:
+                try:
+                    self.root.after_cancel(self._template_change_timer)
+                except:
+                    pass
+            # Устанавливаем новый таймер для применения через 300 мс
+            if hasattr(self, 'root'):
+                self._template_change_timer = self.root.after(300, self._apply_template_delayed)
+        
+        def on_number_change(event=None):
+            # Отменяем предыдущий таймер, если он есть
+            if hasattr(self, '_template_change_timer') and self._template_change_timer:
+                try:
+                    self.root.after_cancel(self._template_change_timer)
+                except:
+                    pass
+            # Устанавливаем новый таймер для применения через 300 мс
+            if hasattr(self, 'root'):
+                self._template_change_timer = self.root.after(300, self._apply_template_delayed)
+        
+        # Привязка событий
+        self.new_name_template.bind('<KeyRelease>', on_template_change)
+        self.new_name_template.bind('<FocusOut>', lambda e: self._apply_template_immediate())
+        self.new_name_start_number.bind('<KeyRelease>', on_number_change)
+        self.new_name_start_number.bind('<FocusOut>', lambda e: self._apply_template_immediate())
+        
+        # Если шаблон уже есть в поле, применяем его сразу
+        if hasattr(self, 'new_name_template'):
+            template = self.new_name_template.get().strip()
+            if template and self.files:
+                # Применяем шаблон с небольшой задержкой после создания виджетов
+                self.root.after(100, lambda: self._apply_template_immediate())
         
         # Предупреждение
         warning_frame = tk.Frame(self.settings_frame, bg='#FEF3C7', 
@@ -2993,7 +3864,10 @@ class FileRenamerApp:
             ("{ext}", "расширение"),
             ("{n}", "номер файла"),
             ("{n:03d}", "номер с нулями (001, 002)"),
+            ("{n:02d}", "номер с нулями (01, 02)"),
             ("{width}x{height}", "размеры изображения"),
+            ("{width}", "ширина изображения"),
+            ("{height}", "высота изображения"),
             ("{date_created}", "дата создания"),
             ("{date_modified}", "дата изменения"),
             ("{file_size}", "размер файла")
@@ -3058,6 +3932,9 @@ class FileRenamerApp:
         template_window.title("Быстрые шаблоны")
         template_window.geometry("500x400")
         
+        # Установка иконки
+        self.set_icon(template_window)
+        
         # Информация о типах файлов
         extensions = self.get_file_types()
         ext_info = ", ".join([f"{ext} ({count})" for ext, count in sorted(extensions.items(), key=lambda x: -x[1])[:5]])
@@ -3091,6 +3968,8 @@ class FileRenamerApp:
                 self.new_name_template.insert(0, template)
                 template_window.destroy()
                 self.log(f"Выбран шаблон: {template}")
+                # Немедленно применяем шаблон
+                self.apply_template_quick(auto=True)
         
         btn_select = self.create_rounded_button(
             btn_frame, "Выбрать", select_template,
@@ -3109,49 +3988,249 @@ class FileRenamerApp:
         # Двойной клик для выбора
         listbox.bind('<Double-Button-1>', lambda e: select_template())
     
-    def apply_template_quick(self):
+    def save_current_template(self):
+        """Сохранение текущего шаблона"""
+        if not hasattr(self, 'new_name_template'):
+            return
+        
+        template = self.new_name_template.get().strip()
+        if not template:
+            messagebox.showwarning("Предупреждение", "Введите шаблон для сохранения")
+            return
+        
+        # Запрашиваем имя для шаблона
+        template_name = simpledialog.askstring(
+            "Сохранить шаблон",
+            "Введите имя для шаблона:",
+            initialvalue=template[:30]  # Предлагаем первые 30 символов
+        )
+        
+        if template_name:
+            template_name = template_name.strip()
+            if template_name:
+                # Получаем начальный номер, если есть
+                start_number = "1"
+                if hasattr(self, 'new_name_start_number'):
+                    start_number = self.new_name_start_number.get().strip() or "1"
+                
+                # Сохраняем шаблон
+                self.saved_templates[template_name] = {
+                    'template': template,
+                    'start_number': start_number
+                }
+                self.save_templates()
+                self.log(f"Шаблон '{template_name}' сохранен")
+                messagebox.showinfo("Успех", f"Шаблон '{template_name}' успешно сохранен!")
+    
+    def show_saved_templates(self):
+        """Показать окно с сохраненными шаблонами"""
+        if not self.saved_templates:
+            messagebox.showinfo("Информация", "Нет сохраненных шаблонов")
+            return
+        
+        # Создание окна выбора шаблона
+        template_window = tk.Toplevel(self.root)
+        template_window.title("Сохраненные шаблоны")
+        template_window.geometry("600x500")
+        
+        # Установка иконки
+        self.set_icon(template_window)
+        
+        # Заголовок
+        header_frame = tk.Frame(template_window, bg=self.colors['bg_card'])
+        header_frame.pack(fill=tk.X, padx=10, pady=10)
+        
+        title_label = tk.Label(header_frame, text="💾 Сохраненные шаблоны", 
+                              font=('Segoe UI', 14, 'bold'),
+                              bg=self.colors['bg_card'], fg=self.colors['text_primary'])
+        title_label.pack(anchor=tk.W)
+        
+        # Список шаблонов
+        list_frame = tk.Frame(template_window, bg=self.colors['bg_card'])
+        list_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
+        
+        scrollbar = ttk.Scrollbar(list_frame)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        
+        listbox = tk.Listbox(list_frame, yscrollcommand=scrollbar.set, 
+                            font=('Segoe UI', 10),
+                            bg=self.colors['bg_card'], fg=self.colors['text_primary'],
+                            selectbackground=self.colors['primary'],
+                            selectforeground='white')
+        scrollbar.config(command=listbox.yview)
+        
+        for template_name in sorted(self.saved_templates.keys()):
+            template_data = self.saved_templates[template_name]
+            display_text = f"{template_name} → {template_data['template']}"
+            listbox.insert(tk.END, display_text)
+        
+        listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        
+        # Кнопки
+        btn_frame = tk.Frame(template_window, bg=self.colors['bg_card'])
+        btn_frame.pack(fill=tk.X, padx=10, pady=10)
+        btn_frame.columnconfigure(0, weight=1)
+        btn_frame.columnconfigure(1, weight=1)
+        btn_frame.columnconfigure(2, weight=1)
+        btn_frame.columnconfigure(3, weight=1)
+        
+        def apply_template():
+            selection = listbox.curselection()
+            if selection:
+                template_name = sorted(self.saved_templates.keys())[selection[0]]
+                template_data = self.saved_templates[template_name]
+                template = template_data['template']
+                start_number = template_data.get('start_number', '1')
+                
+                # Применяем шаблон
+                self.new_name_template.delete(0, tk.END)
+                self.new_name_template.insert(0, template)
+                
+                if hasattr(self, 'new_name_start_number'):
+                    self.new_name_start_number.delete(0, tk.END)
+                    self.new_name_start_number.insert(0, start_number)
+                
+                template_window.destroy()
+                self.log(f"Применен сохраненный шаблон: {template_name}")
+                # Применяем шаблон
+                self.apply_template_quick(auto=True)
+        
+        def delete_template():
+            selection = listbox.curselection()
+            if selection:
+                template_name = sorted(self.saved_templates.keys())[selection[0]]
+                if messagebox.askyesno("Подтверждение", f"Удалить шаблон '{template_name}'?"):
+                    del self.saved_templates[template_name]
+                    self.save_templates()
+                    listbox.delete(selection[0])
+                    self.log(f"Шаблон '{template_name}' удален")
+                    if not self.saved_templates:
+                        template_window.destroy()
+                        messagebox.showinfo("Информация", "Все шаблоны удалены")
+        
+        btn_apply = self.create_rounded_button(
+            btn_frame, "✅ Применить", apply_template,
+            self.colors['success'], 'white',
+            font=('Segoe UI', 9, 'bold'), padx=10, pady=6,
+            active_bg=self.colors['success_hover'])
+        btn_apply.grid(row=0, column=0, sticky="ew", padx=(0, 5))
+        
+        btn_delete = self.create_rounded_button(
+            btn_frame, "🗑️ Удалить", delete_template,
+            self.colors['danger'], 'white',
+            font=('Segoe UI', 9, 'bold'), padx=10, pady=6,
+            active_bg=self.colors['danger_hover'])
+        btn_delete.grid(row=0, column=1, sticky="ew", padx=(0, 5))
+        
+        btn_close = self.create_rounded_button(
+            btn_frame, "❌ Закрыть", template_window.destroy,
+            '#818CF8', 'white',
+            font=('Segoe UI', 9, 'bold'), padx=10, pady=6,
+            active_bg='#6366F1')
+        btn_close.grid(row=0, column=2, sticky="ew")
+        
+        # Двойной клик для применения
+        listbox.bind('<Double-Button-1>', lambda e: apply_template())
+    
+    def _apply_template_immediate(self):
+        """Немедленное применение шаблона (при потере фокуса)"""
+        if hasattr(self, 'new_name_template'):
+            template = self.new_name_template.get().strip()
+            if template:
+                try:
+                    self.apply_template_quick(auto=True)
+                except Exception as e:
+                    # Логируем ошибки, но не показываем пользователю при автоматическом применении
+                    try:
+                        if hasattr(self, 'log'):
+                            self.log(f"Ошибка при применении шаблона: {e}")
+                    except:
+                        pass
+    
+    def _apply_template_delayed(self):
+        """Отложенное применение шаблона (используется для автоматического применения при вводе)"""
+        # Сбрасываем таймер
+        self._template_change_timer = None
+        if hasattr(self, 'new_name_template'):
+            template = self.new_name_template.get().strip()
+            if template:
+                try:
+                    self.apply_template_quick(auto=True)
+                except Exception as e:
+                    # Логируем ошибки, но не показываем пользователю при автоматическом применении
+                    try:
+                        if hasattr(self, 'log'):
+                            self.log(f"Ошибка при автоматическом применении шаблона: {e}")
+                    except:
+                        pass
+    
+    def apply_template_quick(self, auto=False):
         """Быстрое применение шаблона: добавление метода и применение"""
         template = self.new_name_template.get().strip()
         
         if not template:
-            messagebox.showwarning(
-                "Предупреждение",
-                "Введите шаблон или выберите из быстрых шаблонов"
-            )
+            if not auto:
+                messagebox.showwarning(
+                    "Предупреждение",
+                    "Введите шаблон или выберите из быстрых шаблонов"
+                )
             return
         
         try:
-            method = NewNameMethod(
-                template=template,
-                metadata_extractor=self.metadata_extractor,
-                file_number=1
-            )
+            # Удаляем старый метод "Новое имя", если он есть
+            methods_to_remove = []
+            for i, method in enumerate(self.current_methods):
+                if isinstance(method, NewNameMethod):
+                    methods_to_remove.append(i)
+            
+            # Удаляем в обратном порядке, чтобы индексы не сбились
+            for i in reversed(methods_to_remove):
+                self.current_methods.pop(i)
+                if i < self.methods_listbox.size():
+                    self.methods_listbox.delete(i)
+            
+            # Создаем новый метод используя общий метод
+            method = self._create_new_name_method(template)
             
             # Добавляем метод
             self.current_methods.append(method)
             self.methods_listbox.insert(tk.END, "Новое имя")
-            self.log(f"Добавлен метод: Новое имя (шаблон: {template})")
+            
+            if not auto:
+                self.log(f"Добавлен метод: Новое имя (шаблон: {template})")
             
             # Автоматически применяем метод
-            self.apply_methods()
+            if self.files:
+                # Применяем методы и принудительно обновляем таблицу
+                self.apply_methods()
+                # Принудительно обновляем отображение
+                self.root.update_idletasks()
             
-            messagebox.showinfo(
-                "Готово",
-                f"Шаблон '{template}' применен!\n"
-                f"Проверьте предпросмотр в таблице."
-            )
+            if not auto:
+                messagebox.showinfo(
+                    "Готово",
+                    f"Шаблон '{template}' применен!\n"
+                    f"Проверьте предпросмотр в таблице."
+                )
             
         except Exception as e:
-            messagebox.showerror("Ошибка", f"Не удалось применить шаблон: {e}")
+            if not auto:
+                messagebox.showerror("Ошибка", f"Не удалось применить шаблон: {e}")
+            else:
+                # Используем try-except для логирования, так как log может быть не инициализирован
+                try:
+                    self.log(f"Ошибка при применении шаблона: {e}")
+                except:
+                    pass
     
     def create_replace_settings(self):
         """Создание настроек для метода Замена"""
         ttk.Label(self.settings_frame, text="Найти:").pack(anchor=tk.W)
-        self.replace_find = ttk.Entry(self.settings_frame, width=30)
+        self.replace_find = ttk.Entry(self.settings_frame, width=18)
         self.replace_find.pack(fill=tk.X, pady=2)
         
         ttk.Label(self.settings_frame, text="Заменить на:").pack(anchor=tk.W, pady=(5, 0))
-        self.replace_with = ttk.Entry(self.settings_frame, width=30)
+        self.replace_with = ttk.Entry(self.settings_frame, width=18)
         self.replace_with.pack(fill=tk.X, pady=2)
         
         self.replace_case = tk.BooleanVar()
@@ -3239,11 +4318,11 @@ class FileRenamerApp:
     def create_regex_settings(self) -> None:
         """Создание настроек для метода Регулярные выражения."""
         ttk.Label(self.settings_frame, text="Регулярное выражение:").pack(anchor=tk.W)
-        self.regex_pattern = ttk.Entry(self.settings_frame, width=30)
+        self.regex_pattern = ttk.Entry(self.settings_frame, width=18)
         self.regex_pattern.pack(fill=tk.X, pady=2)
         
         ttk.Label(self.settings_frame, text="Замена:").pack(anchor=tk.W, pady=(5, 0))
-        self.regex_replace = ttk.Entry(self.settings_frame, width=30)
+        self.regex_replace = ttk.Entry(self.settings_frame, width=18)
         self.regex_replace.pack(fill=tk.X, pady=2)
         
         btn_test = self.create_rounded_button(
@@ -3272,6 +4351,27 @@ class FileRenamerApp:
         except re.error as e:
             messagebox.showerror("Ошибка", f"Неверное регулярное выражение: {e}")
     
+    def _create_new_name_method(self, template: str) -> NewNameMethod:
+        """Создание метода 'Новое имя' с заданным шаблоном"""
+        if not template:
+            raise ValueError("Введите шаблон нового имени")
+        
+        # Получаем начальный номер из поля ввода
+        start_number = 1
+        if hasattr(self, 'new_name_start_number'):
+            try:
+                start_number = int(self.new_name_start_number.get() or "1")
+                if start_number < 1:
+                    start_number = 1
+            except ValueError:
+                start_number = 1
+        
+        return NewNameMethod(
+            template=template,
+            metadata_extractor=self.metadata_extractor,
+            file_number=start_number
+        )
+    
     def add_method(self):
         """Добавление метода в список применяемых"""
         method_name = self.method_var.get()
@@ -3281,11 +4381,7 @@ class FileRenamerApp:
                 template = self.new_name_template.get()
                 if not template:
                     raise ValueError("Введите шаблон нового имени")
-                method = NewNameMethod(
-                    template=template,
-                    metadata_extractor=self.metadata_extractor,
-                    file_number=1
-                )
+                method = self._create_new_name_method(template)
             elif method_name == "Добавить/Удалить":
                 method = AddRemoveMethod(
                     operation=self.add_remove_op.get(),
@@ -3354,6 +4450,9 @@ class FileRenamerApp:
             self.methods_listbox.insert(tk.END, method_name)
             self.log(f"Добавлен метод: {method_name}")
             
+            # Автоматически применяем методы
+            self.apply_methods()
+            
         except Exception as e:
             messagebox.showerror("Ошибка", f"Не удалось добавить метод: {e}")
     
@@ -3365,6 +4464,8 @@ class FileRenamerApp:
             self.methods_listbox.delete(index)
             self.current_methods.pop(index)
             self.log(f"Удален метод: {index + 1}")
+            # Автоматически применяем методы после удаления
+            self.apply_methods()
     
     def clear_methods(self):
         """Очистка всех методов"""
@@ -3374,14 +4475,15 @@ class FileRenamerApp:
                 self.methods_listbox.delete(0, tk.END)
                 self.log("Все методы очищены")
     
+    
     def apply_methods(self):
         """Применение всех методов к файлам"""
         if not self.files:
-            messagebox.showwarning("Предупреждение", "Нет файлов для обработки")
+            # Если нет файлов, просто выходим без ошибки
             return
         
         if not self.current_methods:
-            messagebox.showwarning("Предупреждение", "Нет методов для применения")
+            # Если нет методов, просто выходим без ошибки
             return
         
         # Сброс счетчиков нумерации перед применением
@@ -3411,14 +4513,33 @@ class FileRenamerApp:
             file_data['status'] = status
             
             # Обновление в таблице
-            item = self.tree.get_children()[i]
-            self.tree.item(item, values=(
-                file_data['old_name'],
-                new_name,
-                extension,
-                file_data['path'],
-                status
-            ))
+            try:
+                children = self.tree.get_children()
+                if i < len(children):
+                    item = children[i]
+                    self.tree.item(item, values=(
+                        file_data['old_name'],
+                        new_name,
+                        extension,
+                        file_data['path'],
+                        status
+                    ))
+                else:
+                    # Если индекс не совпадает, ищем элемент по старому имени
+                    for item in children:
+                        item_values = self.tree.item(item, 'values')
+                        if len(item_values) > 0 and item_values[0] == file_data['old_name']:
+                            self.tree.item(item, values=(
+                                file_data['old_name'],
+                                new_name,
+                                extension,
+                                file_data['path'],
+                                status
+                            ))
+                            break
+            except Exception as e:
+                # Если не удалось обновить элемент, обновляем всю таблицу
+                self.refresh_treeview()
             
             # Цветовое выделение в зависимости от статуса
             if status == "Готов":
@@ -3560,6 +4681,8 @@ class FileRenamerApp:
         for i, file_data in enumerate(files_to_rename):
             try:
                 old_path = file_data['full_path']
+                # Сохраняем оригинальный путь для последующего удаления из списка
+                file_data['original_full_path'] = old_path
                 new_name = file_data['new_name'] + file_data['extension']
                 new_path = os.path.join(file_data['path'], new_name)
                 new_path = os.path.normpath(new_path)
@@ -3644,10 +4767,23 @@ class FileRenamerApp:
                     # Некоторые виджеты не поддерживают операции с canvas
                     pass
         
+        # Собираем список успешно переименованных файлов
+        renamed_files = []
+        for file_data in files_to_rename:
+            new_path = os.path.join(
+                file_data['path'],
+                file_data['new_name'] + file_data['extension']
+            )
+            new_path = os.path.normpath(new_path)
+            old_path = file_data.get('original_full_path', file_data['full_path'])
+            # Если файл был переименован (пути разные) и новый файл существует
+            if old_path != new_path and os.path.exists(new_path):
+                renamed_files.append(file_data)
+        
         # Обновление интерфейса
-        self.root.after(0, lambda: self.rename_complete(success_count, error_count))
+        self.root.after(0, lambda: self.rename_complete(success_count, error_count, renamed_files))
     
-    def rename_complete(self, success: int, error: int):
+    def rename_complete(self, success: int, error: int, renamed_files: list = None):
         """Завершение переименования"""
         messagebox.showinfo("Завершено", f"Переименование завершено.\nУспешно: {success}\nОшибок: {error}")
         self.progress['value'] = 0
@@ -3659,7 +4795,12 @@ class FileRenamerApp:
                 # Прогресс-бар может быть уничтожен
                 pass
         
-        # Обновление списка файлов
+        # Автоматически очищаем все файлы из списка после переименования
+        # (если было хотя бы одно успешное переименование)
+        if success > 0:
+            self.files.clear()
+        
+        # Обновление списка файлов в таблице
         for item in self.tree.get_children():
             self.tree.delete(item)
         
@@ -3671,6 +4812,9 @@ class FileRenamerApp:
                 file_data['path'],
                 file_data['status']
             ))
+        
+        # Обновляем статус
+        self.update_status()
     
     def undo_rename(self):
         """Отмена последнего переименования"""
@@ -3721,13 +4865,9 @@ def main():
     if HAS_TKINTERDND2:
         try:
             root = TkinterDnD.Tk()
-            print("DEBUG: Создано окно TkinterDnD.Tk()")
-        except Exception as e:
-            print(f"Ошибка создания TkinterDnD окна: {e}")
-            print("Используется обычное tk.Tk()")
+        except Exception:
             root = tk.Tk()
     else:
-        print("DEBUG: tkinterdnd2 не установлена, используется обычное tk.Tk()")
         root = tk.Tk()
     
     app = FileRenamerApp(root)
