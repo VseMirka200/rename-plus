@@ -98,7 +98,7 @@ class FileRenamerApp:
         # Трей-иконка
         self.tray_icon = None
         self.tray_thread = None
-        self.minimize_to_tray = True
+        self.minimize_to_tray = False  # По умолчанию закрывать приложение при закрытии окна
         
         # Инициализация модуля метаданных
         self.metadata_extractor = MetadataExtractor()
@@ -751,7 +751,7 @@ class FileRenamerApp:
         # === ОСНОВНОЙ КОНТЕЙНЕР С ВКЛАДКАМИ ===
         # Создаем Notebook для вкладок
         main_notebook = ttk.Notebook(self.root)
-        main_notebook.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        main_notebook.pack(fill=tk.BOTH, expand=True, padx=0, pady=0)
         
         # Обработчик изменения размера главного окна
         def on_root_resize(event=None):
@@ -763,6 +763,9 @@ class FileRenamerApp:
                     canvas_width = self.settings_canvas.winfo_width()
                     if canvas_width > 1 and hasattr(self, 'settings_canvas_window'):
                         self.settings_canvas.itemconfig(self.settings_canvas_window, width=canvas_width)
+                    # Обновляем видимость скроллбара при изменении размера окна
+                    if hasattr(self, 'update_scroll_region'):
+                        self.root.after(150, self.update_scroll_region)
                 except (AttributeError, tk.TclError):
                     pass
         
@@ -798,6 +801,9 @@ class FileRenamerApp:
                         canvas_width = self.settings_canvas.winfo_width()
                         if canvas_width > 1:
                             self.settings_canvas.itemconfig(self.settings_canvas_window, width=canvas_width)
+                        # Обновляем видимость скроллбара при изменении размера
+                        if hasattr(self, 'update_scroll_region'):
+                            self.root.after(100, self.update_scroll_region)
                     except (AttributeError, tk.TclError):
                         pass
         
@@ -806,14 +812,14 @@ class FileRenamerApp:
         
         # Левая часть - список файлов
         left_panel = ttk.LabelFrame(main_container, text="📋 Список файлов", 
-                                    style='Card.TLabelframe', padding=12)
+                                    style='Card.TLabelframe', padding=8)
         left_panel.grid(row=0, column=0, sticky="nsew", padx=(0, 5))
         left_panel.columnconfigure(0, weight=1)
         left_panel.rowconfigure(1, weight=1)  # Строка с таблицей файлов
         
         # Счетчик файлов рядом с заголовком списка
         left_panel_header = tk.Frame(left_panel, bg=self.colors['bg_card'])
-        left_panel_header.pack(fill=tk.X, pady=(0, 16))
+        left_panel_header.pack(fill=tk.X, pady=(0, 8))
         
         self.file_count_label = tk.Label(left_panel_header, text=f"📊 Файлов: {len(self.files)}", 
                                          font=('Segoe UI', 10, 'bold'),
@@ -824,7 +830,7 @@ class FileRenamerApp:
         
         # Панель управления файлами
         control_panel = tk.Frame(left_panel, bg=self.colors['bg_card'])
-        control_panel.pack(fill=tk.X, pady=(0, 16))
+        control_panel.pack(fill=tk.X, pady=(0, 8))
         control_panel.columnconfigure(0, weight=1)
         control_panel.columnconfigure(1, weight=1)
         control_panel.columnconfigure(2, weight=1)
@@ -951,7 +957,7 @@ class FileRenamerApp:
         
         # Внутренний Frame для содержимого с минимальными отступами
         methods_frame = tk.Frame(right_panel, bg=self.colors['bg_card'])
-        methods_frame.pack(fill=tk.BOTH, expand=True, padx=8, pady=8)
+        methods_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
         methods_frame.columnconfigure(0, weight=1)
         methods_frame.rowconfigure(1, weight=1)  # Строка с настройками метода
         
@@ -982,7 +988,7 @@ class FileRenamerApp:
         
         # Область настроек метода с прокруткой
         settings_container = tk.Frame(methods_frame, bg=self.colors['bg_card'])
-        settings_container.pack(fill=tk.BOTH, expand=True, pady=(0, 15))
+        settings_container.pack(fill=tk.BOTH, expand=True, pady=(0, 0))
         settings_container.columnconfigure(0, weight=1)
         settings_container.rowconfigure(0, weight=1)
         
@@ -993,8 +999,41 @@ class FileRenamerApp:
                                            command=settings_canvas.yview)
         scrollable_frame = tk.Frame(settings_canvas, bg=self.colors['bg_card'])
         
+        # Флаг для предотвращения бесконечных циклов
+        _updating_scroll = False
+        
+        def update_scroll_region():
+            """Обновление области прокрутки и видимости скроллбара"""
+            nonlocal _updating_scroll
+            if _updating_scroll:
+                return
+            _updating_scroll = True
+            try:
+                bbox = settings_canvas.bbox("all")
+                if bbox:
+                    # Устанавливаем scrollregion точно по содержимому
+                    settings_canvas.configure(scrollregion=bbox)
+                    
+                    # Проверяем, нужен ли скроллбар
+                    canvas_height = settings_canvas.winfo_height()
+                    content_height = bbox[3] - bbox[1] if bbox else 0
+                    
+                    if content_height > canvas_height and canvas_height > 1:
+                        # Контент не помещается - показываем скроллбар
+                        settings_scrollbar.grid(row=0, column=1, sticky="ns")
+                    else:
+                        # Контент помещается - скрываем скроллбар
+                        settings_scrollbar.grid_remove()
+                else:
+                    settings_scrollbar.grid_remove()
+            except (AttributeError, tk.TclError):
+                pass
+            finally:
+                _updating_scroll = False
+        
         def on_frame_configure(event):
-            settings_canvas.configure(scrollregion=settings_canvas.bbox("all"))
+            # Обновляем scrollregion и видимость скроллбара с задержкой
+            self.root.after_idle(update_scroll_region)
         
         scrollable_frame.bind("<Configure>", on_frame_configure)
         
@@ -1004,12 +1043,24 @@ class FileRenamerApp:
             if event.widget == settings_canvas:
                 try:
                     canvas_width = event.width
-                    settings_canvas.itemconfig(settings_canvas_window, width=canvas_width)
+                    if canvas_width > 1:
+                        settings_canvas.itemconfig(settings_canvas_window, width=canvas_width)
+                    # Обновляем видимость скроллбара при изменении размера canvas с задержкой
+                    self.root.after_idle(update_scroll_region)
                 except (AttributeError, tk.TclError):
                     pass
         
         settings_canvas.bind('<Configure>', on_canvas_configure)
-        settings_canvas.configure(yscrollcommand=settings_scrollbar.set)
+        
+        def on_scroll(*args):
+            """Обработчик прокрутки"""
+            settings_scrollbar.set(*args)
+            # Не вызываем update_scroll_region здесь, чтобы избежать циклов
+        
+        settings_canvas.configure(yscrollcommand=on_scroll)
+        
+        # Сохраняем функцию обновления для использования извне
+        self.update_scroll_region = update_scroll_region
         
         # Сохраняем ссылки для обновления размеров
         self.settings_canvas = settings_canvas
@@ -1026,7 +1077,7 @@ class FileRenamerApp:
         
         # Объединенная группа кнопок (две колонки, кнопка "Начать переименование" внизу на всю ширину)
         method_buttons_frame = tk.Frame(methods_frame, bg=self.colors['bg_card'])
-        method_buttons_frame.pack(fill=tk.X, pady=(0, 20))
+        method_buttons_frame.pack(fill=tk.X, pady=(0, 0))
         method_buttons_frame.columnconfigure(0, weight=1)
         method_buttons_frame.columnconfigure(1, weight=1)
         
@@ -3042,12 +3093,8 @@ class FileRenamerApp:
     
     def on_close_window(self):
         """Обработчик закрытия главного окна"""
-        if self.minimize_to_tray and HAS_PYSTRAY and self.tray_icon:
-            # Сворачиваем в трей
-            self.root.withdraw()
-        else:
-            # Обычное закрытие
-            self.quit_app()
+        # Всегда закрываем приложение при закрытии окна
+        self.quit_app()
     
     def setup_drag_drop(self):
         """Настройка drag and drop для файлов из проводника"""
@@ -3602,6 +3649,10 @@ class FileRenamerApp:
             self.create_metadata_settings()
         elif method_name == "Регулярные выражения":
             self.create_regex_settings()
+        
+        # Обновляем scrollregion и видимость скроллбара после создания содержимого
+        if hasattr(self, 'update_scroll_region'):
+            self.root.after(10, self.update_scroll_region)
     
     def create_add_remove_settings(self):
         """Создание настроек для метода Добавить/Удалить"""
@@ -3757,7 +3808,7 @@ class FileRenamerApp:
         
         # Поле ввода шаблона
         template_label_frame = tk.Frame(self.settings_frame, bg=self.colors['bg_card'])
-        template_label_frame.pack(fill=tk.X, pady=(0, 10))
+        template_label_frame.pack(fill=tk.X, pady=(0, 2))
         
         template_label = tk.Label(template_label_frame, text="✏️ Новое имя (шаблон):", 
                                  font=('Segoe UI', 10, 'bold'),
@@ -3765,11 +3816,11 @@ class FileRenamerApp:
         template_label.pack(side=tk.LEFT)
         
         self.new_name_template = ttk.Entry(self.settings_frame, width=18, font=('Segoe UI', 9))
-        self.new_name_template.pack(fill=tk.X, pady=(0, 12))
+        self.new_name_template.pack(fill=tk.X, pady=(0, 4))
         
         # Настройка начального номера
         number_frame = tk.Frame(self.settings_frame, bg=self.colors['bg_card'])
-        number_frame.pack(fill=tk.X, pady=(0, 12))
+        number_frame.pack(fill=tk.X, pady=(0, 4))
         
         number_label = tk.Label(number_frame, text="🔢 Начальный номер для {n}:", 
                                font=('Segoe UI', 10, 'bold'),
@@ -3833,7 +3884,7 @@ class FileRenamerApp:
                                 relief='flat', borderwidth=1,
                                 highlightbackground='#FCD34D',
                                 highlightthickness=1)
-        warning_frame.pack(fill=tk.X, pady=(0, 15))
+        warning_frame.pack(fill=tk.X, pady=(4, 4))
         
         warning_label = tk.Label(warning_frame, text="⚠ БЕЗ {name} - имя полностью заменяется!", 
                                font=('Segoe UI', 10, 'bold'),
@@ -3846,17 +3897,17 @@ class FileRenamerApp:
                              text="🔗 Доступные переменные (кликните для вставки):", 
                              font=('Segoe UI', 10, 'bold'),
                              bg=self.colors['bg_card'], fg=self.colors['text_primary'])
-        vars_label.pack(anchor=tk.W, pady=(0, 10))
+        vars_label.pack(anchor=tk.W, pady=(4, 4))
         
         variables_frame = tk.Frame(self.settings_frame, bg=self.colors['bg_card'])
-        variables_frame.pack(fill=tk.X, pady=2)
+        variables_frame.pack(fill=tk.X, pady=(0, 0))
         
         # Контейнер для переменных с фоном
         vars_container = tk.Frame(variables_frame, bg=self.colors['bg_secondary'], 
                                  relief='flat', borderwidth=1,
                                  highlightbackground=self.colors['border'],
                                  highlightthickness=1)
-        vars_container.pack(fill=tk.X, padx=0, pady=0)
+        vars_container.pack(fill=tk.X, padx=0, pady=(0, 0))
         
         # Список переменных с описаниями
         variables = [
@@ -3876,7 +3927,11 @@ class FileRenamerApp:
         # Создание кликабельных меток для переменных
         for i, (var, desc) in enumerate(variables):
             var_frame = tk.Frame(vars_container, bg=self.colors['bg_secondary'])
-            var_frame.pack(anchor=tk.W, pady=3, padx=10, fill=tk.X)
+            # Уменьшаем отступ для последнего элемента
+            if i == len(variables) - 1:
+                var_frame.pack(anchor=tk.W, pady=(3, 0), padx=10, fill=tk.X)
+            else:
+                var_frame.pack(anchor=tk.W, pady=3, padx=10, fill=tk.X)
             
             # Кликабельная метка с переменной
             var_label = tk.Label(var_frame, text=f"  {var}", 
