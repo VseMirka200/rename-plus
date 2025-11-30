@@ -49,6 +49,9 @@ from rename_methods import (
     RenameMethod,
     ReplaceMethod,
 )
+from ui_components import UIComponents, StyleManager
+from library_manager import LibraryManager
+from settings_manager import SettingsManager, TemplatesManager
 
 # Константы для прокрутки мыши
 MOUSEWHEEL_DELTA_DIVISOR = 120  # Делитель для нормализации прокрутки
@@ -77,8 +80,17 @@ class FileRenamerApp:
         self.root.columnconfigure(0, weight=1)
         self.root.rowconfigure(0, weight=1)
         
-        # Настройка цветовой схемы
-        self.setup_styles()
+        # Настройка цветовой схемы и стилей
+        self.style_manager = StyleManager()
+        self.colors = self.style_manager.colors
+        self.style = self.style_manager.style
+        self.ui_components = UIComponents()
+        
+        # Настройка фона окна
+        self.root.configure(bg=self.colors['bg_main'])
+        
+        # Привязка изменения размера окна для адаптивного масштабирования
+        self.root.bind('<Configure>', self.on_window_resize)
         
         # Данные приложения
         # Список файлов: {path, old_name, new_name, extension, status}
@@ -103,17 +115,17 @@ class FileRenamerApp:
         # Инициализация модуля метаданных
         self.metadata_extractor = MetadataExtractor()
         
-        # Настройки приложения
-        self.settings_file = os.path.join(
-            os.path.expanduser("~"), ".nazovi_settings.json"
-        )
-        self.settings = self.load_settings()
+        # Менеджеры настроек и шаблонов
+        self.settings_manager = SettingsManager()
+        self.settings = self.settings_manager.settings
+        self.templates_manager = TemplatesManager()
+        self.saved_templates = self.templates_manager.templates
         
-        # Файл для сохранения шаблонов
-        self.templates_file = os.path.join(
-            os.path.expanduser("~"), ".nazovi_templates.json"
+        # Менеджер библиотек (log будет определен позже, используем lambda)
+        self.library_manager = LibraryManager(
+            self.root, 
+            log_callback=lambda msg: self.log(msg) if hasattr(self, 'log_text') else print(msg)
         )
-        self.saved_templates = self.load_templates()
         
         # Создание интерфейса
         self.create_widgets()
@@ -132,6 +144,10 @@ class FileRenamerApp:
         
         # Обработчик закрытия окна - сворачивание в трей
         self.root.protocol("WM_DELETE_WINDOW", self.on_close_window)
+        
+        # Проверка и установка необходимых библиотек (после создания интерфейса)
+        # Выполняем с задержкой, чтобы окно успело отобразиться
+        self.root.after(100, self.library_manager.check_and_install)
     
     def set_icon(self, window):
         """Установка иконки приложения для окна.
@@ -233,415 +249,11 @@ class FileRenamerApp:
                              font=('Segoe UI', 10, 'bold'), padx=16, pady=10, 
                              active_bg=None, active_fg='white', width=None, expand=True):
         """Создание кнопки с закругленными углами через Canvas"""
-        if active_bg is None:
-            active_bg = bg_color
-        
-        # Фрейм для кнопки
-        btn_frame = tk.Frame(parent, bg=parent.cget('bg'))
-        
-        # Вычисляем ширину текста для компактных кнопок
-        if not expand and width is None:
-            # Создаем временный label для измерения текста
-            temp_label = tk.Label(parent, text=text, font=font)
-            temp_label.update_idletasks()
-            text_width = temp_label.winfo_reqwidth()
-            temp_label.destroy()
-            width = text_width + padx * 2 + 10  # Добавляем небольшой запас
-        
-        # Canvas для закругленного фона
-        canvas_height = pady*2 + 16
-        canvas = tk.Canvas(btn_frame, highlightthickness=0, borderwidth=0,
-                          bg=parent.cget('bg'), height=canvas_height)
-        if expand:
-            canvas.pack(fill=tk.BOTH, expand=True)
-        else:
-            if width:
-                canvas.config(width=width)
-                btn_frame.config(width=width)  # Устанавливаем фиксированную ширину для Frame
-            canvas.pack(fill=tk.NONE, expand=False)
-        
-        # Сохраняем параметры
-        canvas.btn_text = text
-        canvas.btn_command = command
-        canvas.btn_bg = bg_color
-        canvas.btn_fg = fg_color
-        canvas.btn_active_bg = active_bg
-        canvas.btn_active_fg = active_fg
-        canvas.btn_font = font
-        canvas.btn_state = 'normal'
-        canvas.btn_width = width  # Сохраняем ширину для компактных кнопок
-        canvas.btn_expand = expand
-        
-        def hex_to_rgb(hex_color):
-            """Конвертация hex в RGB"""
-            hex_color = hex_color.lstrip('#')
-            return tuple(int(hex_color[i:i+2], 16) for i in (0, 2, 4))
-        
-        def draw_button(state='normal'):
-            canvas.delete('all')
-            if canvas.btn_expand:
-                w = canvas.winfo_width()
-            else:
-                w = canvas.btn_width if canvas.btn_width else canvas.winfo_width()
-            h = canvas.winfo_height()
-            if w <= 1 or h <= 1:
-                # Если размер еще не установлен, ждем и перерисовываем
-                canvas.after(10, lambda: draw_button(state))
-                return
-            
-            # Минимальная ширина для кнопки только для расширяемых
-            if canvas.btn_expand and w < 50:
-                w = 50
-            
-            radius = 8
-            color = canvas.btn_active_bg if state == 'active' else canvas.btn_bg
-            text_color = canvas.btn_active_fg if state == 'active' else canvas.btn_fg
-            
-            # Конвертируем цвет в hex для Canvas
-            if isinstance(color, tuple):
-                color_hex = f"#{color[0]:02x}{color[1]:02x}{color[2]:02x}"
-            elif color.startswith('#'):
-                color_hex = color
-            else:
-                color_hex = '#6366F1'  # По умолчанию
-            
-            # Рисуем закругленный прямоугольник через дуги и прямоугольники
-            # Верхние углы
-            canvas.create_arc(0, 0, radius*2, radius*2, start=90, extent=90, 
-                            fill=color_hex, outline=color_hex)
-            canvas.create_arc(w-radius*2, 0, w, radius*2, start=0, extent=90, 
-                            fill=color_hex, outline=color_hex)
-            # Нижние углы
-            canvas.create_arc(0, h-radius*2, radius*2, h, start=180, extent=90, 
-                            fill=color_hex, outline=color_hex)
-            canvas.create_arc(w-radius*2, h-radius*2, w, h, start=270, extent=90, 
-                            fill=color_hex, outline=color_hex)
-            # Центральные прямоугольники
-            canvas.create_rectangle(radius, 0, w-radius, h, fill=color_hex, outline=color_hex)
-            canvas.create_rectangle(0, radius, w, h-radius, fill=color_hex, outline=color_hex)
-            
-            # Текст с автоматическим переносом для маленьких кнопок
-            text = canvas.btn_text
-            # Используем width для автоматического переноса текста
-            canvas.create_text(w//2, h//2, text=text, 
-                             fill=text_color, font=canvas.btn_font, width=max(w-20, 50))
-        
-        def on_enter(e):
-            canvas.btn_state = 'active'
-            draw_button('active')
-        
-        def on_leave(e):
-            canvas.btn_state = 'normal'
-            draw_button('normal')
-        
-        def on_click(e):
-            canvas.btn_command()
-        
-        def on_configure(e):
-            # Для нерасширяемых кнопок игнорируем изменения размера от родителя
-            if not canvas.btn_expand and canvas.btn_width:
-                if canvas.winfo_width() != canvas.btn_width:
-                    canvas.config(width=canvas.btn_width)
-                if btn_frame.winfo_width() != canvas.btn_width:
-                    btn_frame.config(width=canvas.btn_width)
-            draw_button(canvas.btn_state)
-        
-        canvas.bind('<Button-1>', on_click)
-        canvas.bind('<Enter>', on_enter)
-        canvas.bind('<Leave>', on_leave)
-        canvas.bind('<Configure>', on_configure)
-        
-        # Инициализация
-        canvas.after(10, lambda: draw_button('normal'))
-        
-        return btn_frame
+        return self.ui_components.create_rounded_button(
+            parent, text, command, bg_color, fg_color, font, padx, pady,
+            active_bg, active_fg, width, expand
+        )
     
-    def setup_styles(self) -> None:
-        """Настройка современных стилей интерфейса."""
-        self.style = ttk.Style()
-        style = self.style
-        
-        # Используем современную тему
-        try:
-            style.theme_use('vista')  # Windows Vista/7 стиль
-        except Exception:
-            try:
-                style.theme_use('clam')  # Альтернативный стиль
-            except Exception:
-                pass
-        
-        # Современная цветовая схема (Material Design / Fluent Design)
-        self.colors = {
-            # Современная палитра с градиентами
-            'primary': '#667EEA',  # Современный фиолетово-синий
-            'primary_hover': '#5568D3',
-            'primary_light': '#818CF8',
-            'primary_dark': '#4C51BF',
-            'success': '#10B981',
-            'success_hover': '#059669',
-            'warning': '#F59E0B',
-            'danger': '#EF4444',
-            'danger_hover': '#DC2626',
-            'info': '#3B82F6',
-            # Фоны с более мягкими оттенками
-            'bg_main': '#F5F7FA',  # Очень мягкий серо-голубой
-            'bg_secondary': '#EDF2F7',
-            'bg_card': '#FFFFFF',
-            'bg_hover': '#F7FAFC',
-            'bg_input': '#FFFFFF',
-            'bg_elevated': '#FFFFFF',
-            # Границы более мягкие
-            'border': '#E2E8F0',
-            'border_focus': '#667EEA',
-            'border_light': '#F1F5F9',
-            # Текст с лучшим контрастом
-            'text_primary': '#1A202C',
-            'text_secondary': '#4A5568',
-            'text_muted': '#718096',
-            'header_bg': '#FFFFFF',
-            'header_text': '#1A202C',
-            'accent': '#9F7AEA',
-            # Тени более мягкие и современные
-            'shadow': 'rgba(0,0,0,0.08)',
-            'shadow_lg': 'rgba(0,0,0,0.12)',
-            'shadow_xl': 'rgba(0,0,0,0.16)',
-            'glow': 'rgba(102, 126, 234, 0.4)',
-            'gradient_start': '#667EEA',
-            'gradient_end': '#764BA2'
-        }
-        
-        # Настройка стилей кнопок - современный дизайн с четким текстом
-        style.configure('Primary.TButton', 
-                       background=self.colors['primary'],
-                       foreground='white',
-                       font=('Segoe UI', 10, 'bold'),
-                       padding=(16, 10),
-                       borderwidth=0,
-                       focuscolor='none',
-                       relief='flat',
-                       anchor='center')
-        style.map('Primary.TButton',
-                 background=[('active', self.colors['primary_hover']), 
-                           ('pressed', self.colors['primary_dark']),
-                           ('disabled', '#94A3B8')],
-                 foreground=[('active', 'white'), 
-                          ('pressed', 'white'),
-                          ('disabled', '#E2E8F0')],
-                 relief=[('pressed', 'sunken'), ('!pressed', 'flat')])
-        
-        style.configure('Success.TButton',
-                       background=self.colors['success'],
-                       foreground='white',
-                       font=('Segoe UI', 9, 'bold'),
-                       padding=(10, 6),
-                       borderwidth=0,
-                       focuscolor='none',
-                       relief='flat',
-                       anchor='center')
-        style.map('Success.TButton',
-                 background=[('active', self.colors['success_hover']), 
-                           ('pressed', '#047857'),
-                           ('disabled', '#94A3B8')],
-                 foreground=[('active', 'white'), 
-                          ('pressed', 'white'),
-                          ('disabled', '#E2E8F0')],
-                 relief=[('pressed', 'sunken'), ('!pressed', 'flat')])
-        
-        style.configure('Danger.TButton',
-                       background=self.colors['danger'],
-                       foreground='white',
-                       font=('Segoe UI', 9, 'bold'),
-                       padding=(10, 6),
-                       borderwidth=0,
-                       focuscolor='none',
-                       relief='flat',
-                       anchor='center')
-        style.map('Danger.TButton',
-                 background=[('active', self.colors['danger_hover']), 
-                           ('pressed', '#B91C1C'),
-                           ('disabled', '#94A3B8')],
-                 foreground=[('active', 'white'), 
-                          ('pressed', 'white'),
-                          ('disabled', '#E2E8F0')],
-                 relief=[('pressed', 'sunken'), ('!pressed', 'flat')])
-        
-        # Стиль для обычных кнопок - цветной (оранжевый/янтарный)
-        style.configure('TButton',
-                       font=('Segoe UI', 9, 'bold'),
-                       padding=(10, 6),
-                       borderwidth=0,
-                       relief='flat',
-                       background='#F59E0B',
-                       foreground='white',
-                       anchor='center')
-        style.map('TButton',
-                 background=[('active', '#D97706'), 
-                           ('pressed', '#B45309'),
-                           ('disabled', '#94A3B8')],
-                 foreground=[('active', 'white'),
-                          ('pressed', 'white'),
-                          ('disabled', '#E2E8F0')],
-                 relief=[('pressed', 'sunken'), ('!pressed', 'flat')])
-        
-        # Стиль для вторичных кнопок (светло-синий)
-        style.configure('Secondary.TButton',
-                       font=('Segoe UI', 9, 'bold'),
-                       padding=(10, 6),
-                       borderwidth=0,
-                       relief='flat',
-                       background='#818CF8',
-                       foreground='white',
-                       anchor='center')
-        style.map('Secondary.TButton',
-                 background=[('active', '#6366F1'), 
-                           ('pressed', '#4F46E5'),
-                           ('disabled', '#94A3B8')],
-                 foreground=[('active', 'white'),
-                          ('pressed', 'white'),
-                          ('disabled', '#E2E8F0')],
-                 relief=[('pressed', 'sunken'), ('!pressed', 'flat')])
-        
-        # Стиль для предупреждающих кнопок (янтарный)
-        style.configure('Warning.TButton',
-                       font=('Segoe UI', 9, 'bold'),
-                       padding=(10, 6),
-                       borderwidth=0,
-                       relief='flat',
-                       background='#F59E0B',
-                       foreground='white',
-                       anchor='center')
-        style.map('Warning.TButton',
-                 background=[('active', '#D97706'), 
-                           ('pressed', '#B45309'),
-                           ('disabled', '#94A3B8')],
-                 foreground=[('active', 'white'),
-                          ('pressed', 'white'),
-                          ('disabled', '#E2E8F0')],
-                 relief=[('pressed', 'sunken'), ('!pressed', 'flat')])
-        
-        # Стиль для LabelFrame - карточки с тенью (минималистичный с закруглениями)
-        style.configure('Card.TLabelframe', 
-                       background=self.colors['bg_card'],
-                       borderwidth=0,
-                       relief='flat',
-                       bordercolor=self.colors['border'],
-                       padding=24)
-        style.configure('Card.TLabelframe.Label',
-                       background=self.colors['bg_card'],
-                       foreground=self.colors['text_primary'],
-                       font=('Segoe UI', 11, 'bold'),
-                       padding=(0, 0, 0, 12))
-        
-        # Стиль для PanedWindow (разделитель панелей)
-        style.configure('TPanedwindow',
-                       background=self.colors['bg_main'])
-        style.configure('TPanedwindow.Sash',
-                       sashthickness=6,
-                       sashrelief='flat',
-                       sashpad=0)
-        style.map('TPanedwindow.Sash',
-                 background=[('hover', self.colors['primary_light']),
-                           ('active', self.colors['primary'])])
-        
-        # Стиль для обычных меток
-        style.configure('TLabel',
-                       background=self.colors['bg_card'],
-                       foreground=self.colors['text_primary'],
-                       font=('Segoe UI', 9))
-        
-        # Стиль для Frame
-        style.configure('TFrame',
-                       background=self.colors['bg_main'])
-        
-        # Стиль для Notebook (вкладок) - современный дизайн
-        style.configure('TNotebook',
-                       background=self.colors['bg_main'],
-                       borderwidth=0)
-        style.configure('TNotebook.Tab',
-                       padding=(14, 8),
-                       font=('Segoe UI', 9, 'bold'),
-                       background=self.colors['bg_secondary'],
-                       foreground=self.colors['text_secondary'])
-        style.map('TNotebook.Tab',
-                 background=[('selected', self.colors['bg_card']),
-                           ('active', self.colors['bg_hover'])],
-                 foreground=[('selected', self.colors['text_primary']),
-                           ('active', self.colors['text_primary'])],
-                 expand=[('selected', [1, 1, 1, 0])])
-        
-        # Стиль для Radiobutton
-        style.configure('TRadiobutton',
-                       background=self.colors['bg_card'],
-                       foreground=self.colors['text_primary'],
-                       font=('Segoe UI', 9),
-                       selectcolor='white')
-        
-        # Стиль для Checkbutton
-        style.configure('TCheckbutton',
-                       background=self.colors['bg_card'],
-                       foreground=self.colors['text_primary'],
-                       font=('Segoe UI', 9),
-                       selectcolor='white')
-        
-        # Стиль для Entry - современные поля ввода
-        style.configure('TEntry',
-                       fieldbackground=self.colors['bg_input'],
-                       foreground=self.colors['text_primary'],
-                       borderwidth=2,
-                       relief='flat',
-                       padding=10,
-                       font=('Segoe UI', 10))
-        style.map('TEntry',
-                 bordercolor=[('focus', self.colors['border_focus']),
-                            ('!focus', self.colors['border'])],
-                 lightcolor=[('focus', self.colors['border_focus']),
-                           ('!focus', self.colors['border'])],
-                 darkcolor=[('focus', self.colors['border_focus']),
-                          ('!focus', self.colors['border'])])
-        
-        # Стиль для Combobox
-        style.configure('TCombobox',
-                       fieldbackground=self.colors['bg_input'],
-                       foreground=self.colors['text_primary'],
-                       borderwidth=2,
-                       relief='flat',
-                       padding=10,
-                       font=('Segoe UI', 10))
-        style.map('TCombobox',
-                 bordercolor=[('focus', self.colors['border_focus']),
-                            ('!focus', self.colors['border'])],
-                 selectbackground=[('focus', self.colors['bg_input'])],
-                 selectforeground=[('focus', self.colors['text_primary'])])
-        
-        # Стиль для Treeview - современная таблица
-        style.configure('Custom.Treeview',
-                       rowheight=40,
-                       font=('Segoe UI', 10),
-                       background=self.colors['bg_card'],
-                       foreground=self.colors['text_primary'],
-                       fieldbackground=self.colors['bg_card'],
-                       borderwidth=0)
-        style.configure('Custom.Treeview.Heading',
-                       font=('Segoe UI', 10, 'bold'),
-                       background=self.colors['bg_secondary'],
-                       foreground=self.colors['text_primary'],
-                       borderwidth=0,
-                       relief='flat',
-                       padding=(12, 10))
-        style.map('Custom.Treeview.Heading',
-                 background=[('active', self.colors['bg_hover'])])
-        
-        # Стиль для выделенных строк
-        style.map('Custom.Treeview',
-                 background=[('selected', self.colors['primary'])],
-                 foreground=[('selected', 'white')])
-        
-        # Настройка фона окна
-        self.root.configure(bg=self.colors['bg_main'])
-        
-        # Привязка изменения размера окна для адаптивного масштабирования
-        self.root.bind('<Configure>', self.on_window_resize)
-        
     def on_window_resize(self, event=None):
         """Обработчик изменения размера окна для адаптивного масштабирования"""
         if event and event.widget == self.root:
@@ -655,57 +267,21 @@ class FileRenamerApp:
                 except (AttributeError, tk.TclError):
                     # Некоторые виджеты не поддерживают операции с canvas
                     pass
-    
     def load_settings(self):
         """Загрузка настроек из файла"""
-        default_settings = {
-            'auto_apply': False,
-            'show_warnings': True,
-            'font_size': '10',
-            'backup': False
-        }
-        try:
-            if os.path.exists(self.settings_file):
-                with open(self.settings_file, 'r', encoding='utf-8') as f:
-                    loaded = json.load(f)
-                    # Объединяем с дефолтными настройками
-                    default_settings.update(loaded)
-        except Exception as e:
-            print(f"Ошибка загрузки настроек: {e}")
-        return default_settings
+        return self.settings_manager.load_settings()
     
     def save_settings(self, settings_dict):
         """Сохранение настроек в файл"""
-        try:
-            with open(self.settings_file, 'w', encoding='utf-8') as f:
-                json.dump(settings_dict, f, ensure_ascii=False, indent=2)
-            return True
-        except Exception as e:
-            print(f"Ошибка сохранения настроек: {e}")
-            return False
+        return self.settings_manager.save_settings(settings_dict)
     
     def load_templates(self):
         """Загрузка сохраненных шаблонов из файла"""
-        default_templates = {}
-        try:
-            if os.path.exists(self.templates_file):
-                with open(self.templates_file, 'r', encoding='utf-8') as f:
-                    loaded = json.load(f)
-                    if isinstance(loaded, dict):
-                        default_templates = loaded
-        except Exception as e:
-            print(f"Ошибка загрузки шаблонов: {e}")
-        return default_templates
+        return self.templates_manager.load_templates()
     
     def save_templates(self):
         """Сохранение шаблонов в файл"""
-        try:
-            with open(self.templates_file, 'w', encoding='utf-8') as f:
-                json.dump(self.saved_templates, f, ensure_ascii=False, indent=2)
-            return True
-        except Exception as e:
-            print(f"Ошибка сохранения шаблонов: {e}")
-            return False
+        return self.templates_manager.save_templates(self.saved_templates)
     
     def setup_window_resize_handler(self, window, canvas=None, canvas_window=None):
         """Настройка обработчика изменения размера для окна с canvas"""
@@ -2500,9 +2076,9 @@ class FileRenamerApp:
         
         # Заголовок
         log_title = tk.Label(log_controls, text="📋 Лог операций",
-                            font=('Segoe UI', 11, 'bold'),
-                            bg=self.colors['bg_card'],
-                            fg=self.colors['text_primary'])
+                                  font=('Segoe UI', 11, 'bold'),
+                                  bg=self.colors['bg_card'],
+                                  fg=self.colors['text_primary'])
         log_title.grid(row=0, column=0, padx=(0, 12), sticky="w")
         
         btn_clear_log = self.create_rounded_button(
@@ -2534,17 +2110,21 @@ class FileRenamerApp:
         
         log_scroll = ttk.Scrollbar(log_container, orient=tk.VERTICAL)
         log_text_widget = tk.Text(log_container, yscrollcommand=log_scroll.set,
-                               font=('Consolas', 10),
-                               bg=self.colors['bg_card'], fg=self.colors['text_primary'],
-                               relief='flat', borderwidth=0,
-                               padx=12, pady=10,
-                               wrap=tk.WORD)
+                                  wrap=tk.WORD, font=('Consolas', 9),
+                                  bg=self.colors['bg_secondary'],
+                                  fg=self.colors['text_primary'],
+                                  insertbackground=self.colors['text_primary'],
+                                  relief='flat', borderwidth=0,
+                                  padx=10, pady=10)
         log_scroll.config(command=log_text_widget.yview)
         
         log_text_widget.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         log_scroll.pack(side=tk.RIGHT, fill=tk.Y)
         
-        # Привязка прокрутки колесом мыши для лога
+        # Сохраняем ссылку на виджет лога
+        self.log_text_widget = log_text_widget
+        
+        # Привязка прокрутки колесиком мыши
         self.bind_mousewheel(log_text_widget, log_text_widget)
         
         # Сохраняем ссылку на log_text
@@ -3851,9 +3431,9 @@ class FileRenamerApp:
                     self.root.after_cancel(self._template_change_timer)
                 except:
                     pass
-            # Устанавливаем новый таймер для применения через 300 мс
+            # Устанавливаем новый таймер для применения через 150 мс (быстрее для мгновенного отображения)
             if hasattr(self, 'root'):
-                self._template_change_timer = self.root.after(300, self._apply_template_delayed)
+                self._template_change_timer = self.root.after(150, self._apply_template_delayed)
         
         def on_number_change(event=None):
             # Отменяем предыдущий таймер, если он есть
@@ -3862,9 +3442,9 @@ class FileRenamerApp:
                     self.root.after_cancel(self._template_change_timer)
                 except:
                     pass
-            # Устанавливаем новый таймер для применения через 300 мс
+            # Устанавливаем новый таймер для применения через 150 мс (быстрее для мгновенного отображения)
             if hasattr(self, 'root'):
-                self._template_change_timer = self.root.after(300, self._apply_template_delayed)
+                self._template_change_timer = self.root.after(150, self._apply_template_delayed)
         
         # Привязка событий
         self.new_name_template.bind('<KeyRelease>', on_template_change)
@@ -3970,6 +3550,11 @@ class FileRenamerApp:
             # Устанавливаем курсор после вставленной переменной
             self.new_name_template.icursor(cursor_pos + len(variable))
             self.new_name_template.focus()
+            
+            # Автоматически применяем шаблон сразу после вставки переменной
+            if hasattr(self, 'root') and self.files:
+                # Применяем с небольшой задержкой, чтобы пользователь увидел вставленную переменную
+                self.root.after(100, self._apply_template_immediate)
     
     def show_quick_templates(self):
         """Показать окно с быстрыми шаблонами"""
@@ -4210,7 +3795,11 @@ class FileRenamerApp:
             template = self.new_name_template.get().strip()
             if template:
                 try:
+                    # Применяем шаблон
                     self.apply_template_quick(auto=True)
+                    # Убеждаемся, что таблица обновлена
+                    if hasattr(self, 'refresh_treeview'):
+                        self.refresh_treeview()
                 except Exception as e:
                     # Логируем ошибки, но не показываем пользователю при автоматическом применении
                     try:
@@ -4258,6 +3847,8 @@ class FileRenamerApp:
             if self.files:
                 # Применяем методы и принудительно обновляем таблицу
                 self.apply_methods()
+                # Полностью обновляем таблицу для отображения изменений
+                self.refresh_treeview()
                 # Принудительно обновляем отображение
                 self.root.update_idletasks()
             
