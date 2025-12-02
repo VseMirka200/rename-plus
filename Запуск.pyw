@@ -8,7 +8,6 @@ import os
 
 # Установка кодировки UTF-8 для корректного отображения русских символов
 if sys.platform == 'win32':
-    import locale
     try:
         # Пытаемся установить UTF-8 кодировку
         if hasattr(sys, 'setdefaultencoding'):

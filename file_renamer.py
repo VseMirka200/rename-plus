@@ -1,9 +1,7 @@
 """Модуль для переименования файлов с графическим интерфейсом."""
 
-import json
 import os
 import re
-import subprocess
 import sys
 import threading
 from datetime import datetime
@@ -15,7 +13,7 @@ from tkinter import filedialog, messagebox, ttk, simpledialog
 
 # Попытка импортировать PIL для закругленных углов
 try:
-    from PIL import Image, ImageDraw, ImageTk
+    from PIL import Image, ImageTk
     HAS_PIL = True
 except ImportError:
     HAS_PIL = False
@@ -52,11 +50,17 @@ from rename_methods import (
 from ui_components import UIComponents, StyleManager
 from library_manager import LibraryManager
 from settings_manager import SettingsManager, TemplatesManager
-
-# Константы для прокрутки мыши
-MOUSEWHEEL_DELTA_DIVISOR = 120  # Делитель для нормализации прокрутки
-LINUX_SCROLL_UP = 4
-LINUX_SCROLL_DOWN = 5
+from window_utils import set_window_icon, bind_mousewheel, setup_window_resize_handler
+from file_operations import (
+    add_file_to_list,
+    validate_filename,
+    check_conflicts,
+    rename_files_thread
+)
+from drag_drop import setup_drag_drop as setup_drag_drop_util, setup_treeview_drag_drop
+from tray_manager import TrayManager
+from logger import Logger
+from methods_manager import MethodsManager
 
 
 class FileRenamerApp:
@@ -74,7 +78,8 @@ class FileRenamerApp:
         self.root.minsize(800, 500)  # Уменьшен минимальный размер для поддержки маленьких экранов
         
         # Установка иконки приложения
-        self.set_icon(self.root)
+        self._icon_photos = []
+        set_window_icon(self.root, self._icon_photos)
         
         # Настройка адаптивности
         self.root.columnconfigure(0, weight=1)
@@ -96,7 +101,7 @@ class FileRenamerApp:
         # Список файлов: {path, old_name, new_name, extension, status}
         self.files: List[Dict] = []
         self.undo_stack: List[List[Dict]] = []  # Стек для отмены
-        self.current_methods: List[RenameMethod] = []  # Методы
+        # Методы переименования (используем methods_manager)
         
         # Окна для вкладок
         self.windows = {
@@ -105,11 +110,15 @@ class FileRenamerApp:
             'methods': None  # Окно методов переименования
         }
         self.tabs_window_notebook = None  # Notebook для вкладок
-        self.log_text = None  # Ссылка на текстовое поле лога
+        
+        # Инициализация логгера
+        self.logger = Logger()
+        
+        # Инициализация менеджера методов
+        self.methods_manager = MethodsManager(self.metadata_extractor)
         
         # Трей-иконка
-        self.tray_icon = None
-        self.tray_thread = None
+        self.tray_manager = None
         self.minimize_to_tray = False  # По умолчанию закрывать приложение при закрытии окна
         
         # Инициализация модуля метаданных
@@ -121,10 +130,10 @@ class FileRenamerApp:
         self.templates_manager = TemplatesManager()
         self.saved_templates = self.templates_manager.templates
         
-        # Менеджер библиотек (log будет определен позже, используем lambda)
+        # Менеджер библиотек
         self.library_manager = LibraryManager(
             self.root, 
-            log_callback=lambda msg: self.log(msg) if hasattr(self, 'log_text') else print(msg)
+            log_callback=lambda msg: self.logger.log(msg)
         )
         
         # Создание интерфейса
@@ -149,101 +158,9 @@ class FileRenamerApp:
         # Выполняем с задержкой, чтобы окно успело отобразиться
         self.root.after(100, self.library_manager.check_and_install)
     
-    def set_icon(self, window):
-        """Установка иконки приложения для окна.
-        
-        Args:
-            window: Окно Tkinter для установки иконки
-        """
-        try:
-            # Сначала пробуем использовать .ico файл для Windows (для лучшей поддержки в exe)
-            ico_path = os.path.join(os.path.dirname(__file__), "materials", "icon", "icon.ico")
-            if os.path.exists(ico_path):
-                try:
-                    window.iconbitmap(ico_path)
-                    return  # Успешно установили .ico файл
-                except Exception:
-                    pass  # Пробуем PNG как fallback
-            
-            # Путь к PNG иконке
-            icon_path = os.path.join(os.path.dirname(__file__), "materials", "icon", "1000x1000.png")
-            
-            # Проверяем существование файла
-            if os.path.exists(icon_path):
-                # Загружаем изображение
-                if HAS_PIL:
-                    # Используем PIL для загрузки PNG
-                    img = Image.open(icon_path)
-                    # Конвертируем в PhotoImage для Tkinter
-                    photo = ImageTk.PhotoImage(img)
-                    # Устанавливаем иконку
-                    window.iconphoto(False, photo)
-                    # Сохраняем ссылку, чтобы изображение не было удалено сборщиком мусора
-                    if not hasattr(self, '_icon_photos'):
-                        self._icon_photos = []
-                    self._icon_photos.append(photo)
-                else:
-                    # Если PIL недоступен, пробуем использовать встроенные возможности
-                    try:
-                        # Для Windows можно попробовать использовать .ico файл
-                        # Но сначала попробуем iconphoto с обычным PhotoImage
-                        photo = tk.PhotoImage(file=icon_path)
-                        window.iconphoto(False, photo)
-                        if not hasattr(self, '_icon_photos'):
-                            self._icon_photos = []
-                        self._icon_photos.append(photo)
-                    except Exception:
-                        # Если не получилось, пробуем iconbitmap для Windows
-                        # Создаем временный .ico файл или используем альтернативный путь
-                        pass
-        except Exception as e:
-            # Если не удалось установить иконку, просто игнорируем ошибку
-            # Не используем self.log, так как он может быть еще не инициализирован
-            print(f"Не удалось установить иконку: {e}")
-    
     def bind_mousewheel(self, widget, canvas=None):
-        """Привязка прокрутки колесом мыши к виджету.
-        
-        Args:
-            widget: Виджет для привязки прокрутки
-            canvas: Опциональный Canvas для прокрутки
-        """
-        def on_mousewheel(event):
-            """Обработчик прокрутки для Windows и macOS."""
-            scroll_amount = int(-1 * (event.delta / MOUSEWHEEL_DELTA_DIVISOR))
-            target = canvas if canvas else widget
-            if hasattr(target, 'yview_scroll'):
-                target.yview_scroll(scroll_amount, "units")
-        
-        def on_mousewheel_linux(event):
-            """Обработчик прокрутки для Linux."""
-            target = canvas if canvas else widget
-            if hasattr(target, 'yview_scroll'):
-                if event.num == LINUX_SCROLL_UP:
-                    target.yview_scroll(-1, "units")
-                elif event.num == LINUX_SCROLL_DOWN:
-                    target.yview_scroll(1, "units")
-        
-        # Windows и macOS
-        widget.bind("<MouseWheel>", on_mousewheel)
-        # Linux
-        widget.bind("<Button-4>", on_mousewheel_linux)
-        widget.bind("<Button-5>", on_mousewheel_linux)
-        
-        # Также привязываем к дочерним виджетам
-        def bind_to_children(parent):
-            """Рекурсивная привязка прокрутки к дочерним виджетам."""
-            for child in parent.winfo_children():
-                try:
-                    child.bind("<MouseWheel>", on_mousewheel)
-                    child.bind("<Button-4>", on_mousewheel_linux)
-                    child.bind("<Button-5>", on_mousewheel_linux)
-                    bind_to_children(child)
-                except (AttributeError, tk.TclError):
-                    # Некоторые виджеты не поддерживают привязку событий
-                    pass
-        
-        bind_to_children(widget)
+        """Привязка прокрутки колесом мыши к виджету."""
+        bind_mousewheel(widget, canvas)
     
     def create_rounded_button(self, parent, text, command, bg_color, fg_color='white', 
                              font=('Segoe UI', 10, 'bold'), padx=16, pady=10, 
@@ -285,17 +202,7 @@ class FileRenamerApp:
     
     def setup_window_resize_handler(self, window, canvas=None, canvas_window=None):
         """Настройка обработчика изменения размера для окна с canvas"""
-        def on_resize(event):
-            if canvas and canvas_window is not None:
-                try:
-                    canvas_width = event.width
-                    canvas.itemconfig(canvas_window, width=canvas_width)
-                except (AttributeError, tk.TclError):
-                    # Некоторые виджеты не поддерживают операции с canvas
-                    pass
-        
-        if canvas:
-            window.bind('<Configure>', on_resize)
+        setup_window_resize_handler(window, canvas, canvas_window)
     
     def update_tree_columns(self):
         """Обновление размеров колонок таблицы в соответствии с размером окна"""
@@ -721,7 +628,7 @@ class FileRenamerApp:
         self.methods_listbox.pack_forget()  # Скрываем его
         
         # Создаем log_text для логирования (будет использоваться в окне лога)
-        self.log_text = None
+        self.logger.set_log_widget(None)
         
         # Инициализация первого метода (Новое имя)
         self.on_method_selected()
@@ -996,30 +903,13 @@ class FileRenamerApp:
         if not hasattr(self, 'methods_window_listbox'):
             return
         self.methods_window_listbox.delete(0, tk.END)
-        for i, method in enumerate(self.current_methods):
+        for i, method in enumerate(self.methods_manager.get_methods()):
             name = self._get_method_display_name(method)
             self.methods_window_listbox.insert(tk.END, f"{i+1}. {name}")
     
     def _get_method_display_name(self, method):
         """Получение имени метода для отображения"""
-        if isinstance(method, NewNameMethod):
-            tpl = method.template[:25] + "..." if len(method.template) > 25 else method.template
-            return f"Новое имя: {tpl}"
-        elif isinstance(method, AddRemoveMethod):
-            return f"Добавить/Удалить ({'Добавить' if method.operation == 'add' else 'Удалить'})"
-        elif isinstance(method, ReplaceMethod):
-            return f"Замена: {method.find} → {method.replace}"
-        elif isinstance(method, CaseMethod):
-            case_names = {"lower": "строчные", "upper": "заглавные", 
-                         "capitalize": "первая заглавная", "title": "заглавные слова"}
-            return f"Регистр: {case_names.get(method.case_type, method.case_type)}"
-        elif isinstance(method, NumberingMethod):
-            return f"Нумерация (с {method.start}, шаг {method.step})"
-        elif isinstance(method, MetadataMethod):
-            return f"Метаданные: {method.tag}"
-        elif isinstance(method, RegexMethod):
-            return "Регулярные выражения"
-        return "Неизвестный метод"
+        return self.methods_manager.get_method_display_name(method)
     
     def _on_method_selected_in_window(self):
         """Обработка выбора метода из списка"""
@@ -1027,8 +917,9 @@ class FileRenamerApp:
         if not selection:
             return
         index = selection[0]
-        if 0 <= index < len(self.current_methods):
-            method = self.current_methods[index]
+        methods = self.methods_manager.get_methods()
+        if 0 <= index < len(methods):
+            method = methods[index]
             self._load_method_settings(method)
     
     def _load_method_settings(self, method):
@@ -1327,7 +1218,7 @@ class FileRenamerApp:
                 )
             
             if method:
-                self.current_methods.append(method)
+                self.methods_manager.add_method(method)
                 self.methods_listbox.insert(tk.END, method_name)
                 self._update_methods_window_list()
                 self.log(f"Добавлен метод: {method_name}")
@@ -1343,8 +1234,9 @@ class FileRenamerApp:
             return
         
         index = selection[0]
-        if 0 <= index < len(self.current_methods):
-            self.current_methods.pop(index)
+        methods = self.methods_manager.get_methods()
+        if 0 <= index < len(methods):
+            self.methods_manager.remove_method(index)
             self.methods_listbox.delete(index)
             self._update_methods_window_list()
             self.log(f"Удален метод: {index + 1}")
@@ -1352,9 +1244,9 @@ class FileRenamerApp:
     
     def _clear_methods_from_window(self):
         """Очистка всех методов"""
-        if self.current_methods:
+        if self.methods_manager.get_methods():
             if messagebox.askyesno("Подтверждение", "Очистить все методы?"):
-                self.current_methods.clear()
+                self.methods_manager.clear_methods()
                 self.methods_listbox.delete(0, tk.END)
                 self._update_methods_window_list()
                 self.log("Все методы очищены")
@@ -1411,7 +1303,7 @@ class FileRenamerApp:
         
         # Обработчик закрытия окна
         def on_close():
-            self.log_text = None
+            self.logger.set_log_widget(None)
             self.close_window('tabs')
         
         window.protocol("WM_DELETE_WINDOW", on_close)
@@ -1499,7 +1391,7 @@ class FileRenamerApp:
         self.bind_mousewheel(log_text_widget, log_text_widget)
         
         # Сохраняем ссылку на log_text
-        self.log_text = log_text_widget
+        self.logger.set_log_widget(log_text_widget)
     
     def _create_main_settings_tab(self):
         """Создание вкладки настроек на главном экране"""
@@ -2128,7 +2020,7 @@ class FileRenamerApp:
         self.bind_mousewheel(log_text_widget, log_text_widget)
         
         # Сохраняем ссылку на log_text
-        self.log_text = log_text_widget
+        self.logger.set_log_widget(log_text_widget)
     
     def _create_settings_tab(self, notebook):
         """Создание вкладки настроек"""
@@ -2593,7 +2485,7 @@ class FileRenamerApp:
         if window_name in self.windows and self.windows[window_name] is not None:
             if window_name == 'tabs':
                 # Сохраняем log_text для логирования
-                self.log_text = None
+                self.logger.set_log_widget(None)
             try:
                 self.windows[window_name].destroy()
             except (AttributeError, tk.TclError):
@@ -2611,35 +2503,12 @@ class FileRenamerApp:
     
     def setup_tray_icon(self):
         """Настройка трей-иконки"""
-        if not HAS_PYSTRAY:
-            return
-        
-        try:
-            # Загружаем иконку для трея
-            icon_path = os.path.join(os.path.dirname(__file__), "materials", "icon", "1000x1000.png")
-            if os.path.exists(icon_path) and HAS_PIL:
-                # Открываем иконку и изменяем размер для трея (обычно 16x16 или 32x32)
-                img = PILImage.open(icon_path)
-                img = img.resize((64, 64), PILImage.Resampling.LANCZOS)
-                
-                # Создаем меню для трей-иконки
-                menu = pystray.Menu(
-                    item('Показать', self.show_window_from_tray),
-                    item('Выход', self.quit_from_tray)
-                )
-                
-                # Создаем трей-иконку
-                self.tray_icon = pystray.Icon("Назови", img, "Назови", menu)
-                
-                # Запускаем трей-иконку в отдельном потоке
-                self.tray_thread = threading.Thread(target=self.tray_icon.run, daemon=True)
-                self.tray_thread.start()
-        except Exception as e:
-            print(f"Ошибка при создании трей-иконки: {e}")
-    
-    def show_window_from_tray(self, icon=None, item=None):
-        """Показать окно из трей-иконки"""
-        self.root.after(0, self.show_window)
+        self.tray_manager = TrayManager(
+            self.root,
+            self.show_window,
+            self.quit_app
+        )
+        self.tray_manager.setup()
     
     def show_window(self):
         """Показать главное окно"""
@@ -2647,7 +2516,6 @@ class FileRenamerApp:
             self.root.deiconify()
             self.root.lift()
             self.root.focus_force()
-            # Пытаемся развернуть окно, если оно было свернуто
             try:
                 self.root.state('normal')
             except:
@@ -2655,19 +2523,10 @@ class FileRenamerApp:
         except Exception:
             pass
     
-    def quit_from_tray(self, icon=None, item=None):
-        """Выход из приложения через трей"""
-        if self.tray_icon:
-            self.tray_icon.stop()
-        self.root.after(0, self.quit_app)
-    
     def quit_app(self):
         """Полный выход из приложения"""
-        if self.tray_icon:
-            try:
-                self.tray_icon.stop()
-            except:
-                pass
+        if self.tray_manager:
+            self.tray_manager.stop()
         self.root.quit()
         self.root.destroy()
     
@@ -2676,9 +2535,15 @@ class FileRenamerApp:
         # Всегда закрываем приложение при закрытии окна
         self.quit_app()
     
+    def _on_drop_files_callback(self, files: List[str]) -> None:
+        """Обработчик сброса файлов."""
+        self._process_dropped_files(files)
+    
     def setup_drag_drop(self):
         """Настройка drag and drop для файлов из проводника"""
-        # Используем tkinterdnd2 если доступно
+        setup_drag_drop_util(self.root, self._on_drop_files_callback)
+        
+        # Дополнительная настройка для совместимости
         if HAS_TKINTERDND2:
             try:
                 # Проверяем, что root поддерживает drag and drop
@@ -3054,58 +2919,15 @@ class FileRenamerApp:
     
     def log(self, message: str):
         """Добавление сообщения в лог"""
-        timestamp = datetime.now().strftime("%H:%M:%S")
-        log_message = f"[{timestamp}] {message}\n"
-        
-        # Выводим в консоль для отладки
-        print(log_message.strip())
-        
-        # Добавляем в лог, если окно лога открыто
-        if hasattr(self, 'log_text') and self.log_text is not None:
-            try:
-                self.log_text.insert(tk.END, log_message)
-                self.log_text.see(tk.END)
-            except tk.TclError:
-                # Окно было закрыто
-                self.log_text = None
+        self.logger.log(message)
     
     def clear_log(self):
         """Очистка лога операций"""
-        if hasattr(self, 'log_text') and self.log_text is not None:
-            try:
-                self.log_text.delete(1.0, tk.END)
-                self.log("Лог очищен")
-            except tk.TclError:
-                self.log_text = None
+        self.logger.clear()
     
     def save_log(self):
         """Сохранение/выгрузка лога в файл"""
-        if hasattr(self, 'log_text') and self.log_text is not None:
-            try:
-                log_content = self.log_text.get(1.0, tk.END)
-                if not log_content.strip():
-                    messagebox.showwarning("Предупреждение", "Лог пуст, нечего сохранять.")
-                    return
-                
-                filename = filedialog.asksaveasfilename(
-                    defaultextension=".txt",
-                    filetypes=[
-                        ("Текстовые файлы", "*.txt"),
-                        ("Лог файлы", "*.log"),
-                        ("Все файлы", "*.*")
-                    ],
-                    title="Выгрузить лог"
-                )
-                
-                if filename:
-                    with open(filename, 'w', encoding='utf-8') as f:
-                        f.write(log_content)
-                    messagebox.showinfo("Успех", f"Лог успешно выгружен в файл:\n{filename}")
-                    self.log(f"Лог выгружен в файл: {filename}")
-            except Exception as e:
-                messagebox.showerror("Ошибка", f"Не удалось выгрузить лог:\n{str(e)}")
-        else:
-            messagebox.showwarning("Предупреждение", "Окно лога не открыто.")
+        self.logger.save()
     
     def add_files(self):
         """Добавление файлов через диалог выбора"""
@@ -3823,13 +3645,13 @@ class FileRenamerApp:
         try:
             # Удаляем старый метод "Новое имя", если он есть
             methods_to_remove = []
-            for i, method in enumerate(self.current_methods):
+            for i, method in enumerate(self.methods_manager.get_methods()):
                 if isinstance(method, NewNameMethod):
                     methods_to_remove.append(i)
             
             # Удаляем в обратном порядке, чтобы индексы не сбились
             for i in reversed(methods_to_remove):
-                self.current_methods.pop(i)
+                self.methods_manager.remove_method(i)
                 if i < self.methods_listbox.size():
                     self.methods_listbox.delete(i)
             
@@ -3837,7 +3659,7 @@ class FileRenamerApp:
             method = self._create_new_name_method(template)
             
             # Добавляем метод
-            self.current_methods.append(method)
+            self.methods_manager.add_method(method)
             self.methods_listbox.insert(tk.END, "Новое имя")
             
             if not auto:
@@ -4092,7 +3914,7 @@ class FileRenamerApp:
             else:
                 return
             
-            self.current_methods.append(method)
+            self.methods_manager.add_method(method)
             self.methods_listbox.insert(tk.END, method_name)
             self.log(f"Добавлен метод: {method_name}")
             
@@ -4108,16 +3930,16 @@ class FileRenamerApp:
         if selection:
             index = selection[0]
             self.methods_listbox.delete(index)
-            self.current_methods.pop(index)
+            self.methods_manager.remove_method(index)
             self.log(f"Удален метод: {index + 1}")
             # Автоматически применяем методы после удаления
             self.apply_methods()
     
     def clear_methods(self):
         """Очистка всех методов"""
-        if self.current_methods:
+        if self.methods_manager.get_methods():
             if messagebox.askyesno("Подтверждение", "Очистить все методы?"):
-                self.current_methods.clear()
+                self.methods_manager.clear_methods()
                 self.methods_listbox.delete(0, tk.END)
                 self.log("Все методы очищены")
     
@@ -4128,12 +3950,12 @@ class FileRenamerApp:
             # Если нет файлов, просто выходим без ошибки
             return
         
-        if not self.current_methods:
+        if not self.methods_manager.get_methods():
             # Если нет методов, просто выходим без ошибки
             return
         
         # Сброс счетчиков нумерации перед применением
-        for method in self.current_methods:
+        for method in self.methods_manager.get_methods():
             if isinstance(method, NumberingMethod):
                 method.reset()
             elif isinstance(method, NewNameMethod):
@@ -4145,7 +3967,7 @@ class FileRenamerApp:
             extension = file_data['extension']
             
             # Применяем все методы последовательно
-            for method in self.current_methods:
+            for method in self.methods_manager.get_methods():
                 try:
                     new_name, extension = method.apply(new_name, extension, file_data['full_path'])
                 except Exception as e:
@@ -4155,7 +3977,7 @@ class FileRenamerApp:
             file_data['extension'] = extension
             
             # Проверка на валидность имени
-            status = self.validate_filename(new_name, extension, file_data['path'], i)
+            status = validate_filename(new_name, extension, file_data['path'], i)
             file_data['status'] = status
             
             # Обновление в таблице
@@ -4197,79 +4019,9 @@ class FileRenamerApp:
                 self.tree.item(item, tags=('error',))
         
         # Проверка на конфликты
-        self.check_conflicts()
+        check_conflicts(self.files)
         self.log(f"Методы применены к {len(self.files)} файлам")
     
-    def validate_filename(self, name: str, extension: str, path: str, index: int) -> str:
-        """Проверка валидности имени файла"""
-        # Запрещенные символы
-        forbidden = ['/', '\\', ':', '*', '?', '"', '<', '>', '|']
-        
-        full_name = name + extension
-        for char in forbidden:
-            if char in full_name:
-                return f"Ошибка: запрещенный символ '{char}'"
-        
-        # Проверка на пустое имя
-        if not name.strip():
-            return "Ошибка: пустое имя"
-        
-        # Проверка длины (Windows ограничение ~260 символов)
-        full_path = os.path.join(path, full_name)
-        if len(full_path) > 260:
-            return "Ошибка: слишком длинный путь"
-        
-        return "Готов"
-    
-    def check_conflicts(self):
-        """Проверка на конфликты имен (внутри списка и с существующими файлами)"""
-        name_map = {}
-        conflicts = []
-        
-        for i, file_data in enumerate(self.files):
-            if file_data['status'] != "Готов":
-                continue
-            
-            full_name = file_data['new_name'] + file_data['extension']
-            full_path = os.path.join(file_data['path'], full_name)
-            
-            # Нормализация пути для сравнения
-            full_path = os.path.normpath(full_path)
-            
-            # Проверка конфликта с другими файлами в списке
-            if full_path in name_map:
-                conflicts.append(i)
-                conflicts.append(name_map[full_path])
-            else:
-                name_map[full_path] = i
-            
-            # Проверка конфликта с существующими файлами на диске
-            # (только если новый путь отличается от исходного)
-            old_path = file_data.get('full_path', '')
-            if old_path != full_path and os.path.exists(full_path):
-                conflicts.append(i)
-                if full_path not in name_map:
-                    name_map[full_path] = i
-        
-        # Выделение конфликтов
-        conflict_set = set(conflicts)
-        for conflict_index in conflict_set:
-            if conflict_index < len(self.files):
-                self.files[conflict_index]['status'] = "Конфликт имен"
-                # Обновление в дереве
-                children = self.tree.get_children()
-                if conflict_index < len(children):
-                    item = children[conflict_index]
-                    self.tree.item(item, values=(
-                        self.files[conflict_index]['old_name'],
-                        self.files[conflict_index]['new_name'],
-                        self.files[conflict_index]['extension'],
-                        self.files[conflict_index]['path'],
-                        "Конфликт имен"
-                    ), tags=('conflict',))
-        
-        if conflicts:
-            self.log(f"Обнаружено конфликтов имен: {len(conflict_set)}")
     
     def start_rename(self):
         """Начало процесса переименования"""
@@ -4297,14 +4049,13 @@ class FileRenamerApp:
         self.undo_stack.append(undo_state)
         
         # Запуск переименования в отдельном потоке
-        thread = threading.Thread(
-            target=self.rename_files_thread,
-            args=(ready_files,)
+        rename_files_thread(
+            ready_files,
+            self.rename_complete,
+            self.log
         )
-        thread.daemon = True
-        thread.start()
     
-    def rename_files_thread(self, files_to_rename: List[Dict]):
+    def _rename_files_thread_old(self, files_to_rename: List[Dict]):
         """Переименование файлов в отдельном потоке"""
         total = len(files_to_rename)
         success_count = 0
