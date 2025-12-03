@@ -3,10 +3,13 @@
 Реализует различные стратегии переименования
 """
 
+import logging
 import re
 from abc import ABC, abstractmethod
 from typing import Tuple, Optional
 from datetime import datetime
+
+logger = logging.getLogger(__name__)
 
 
 class RenameMethod(ABC):
@@ -301,7 +304,8 @@ class RegexMethod(RenameMethod):
         try:
             new_name = self.compiled_pattern.sub(self.replace, name)
             return new_name, extension
-        except Exception:
+        except Exception as e:
+            logger.warning(f"Ошибка применения regex паттерна '{self.pattern}': {e}")
             return name, extension
 
 

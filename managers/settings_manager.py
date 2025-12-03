@@ -1,8 +1,12 @@
 """Модуль для управления настройками и шаблонами."""
 
 import json
+import logging
 import os
 from typing import Dict, Any, Optional
+
+# Настройка логирования
+logger = logging.getLogger(__name__)
 
 
 class SettingsManager:
@@ -39,9 +43,14 @@ class SettingsManager:
             if os.path.exists(self.settings_file):
                 with open(self.settings_file, 'r', encoding='utf-8') as f:
                     loaded = json.load(f)
-                    settings.update(loaded)
+                    if isinstance(loaded, dict):
+                        settings.update(loaded)
+                    else:
+                        logger.warning(f"Файл настроек содержит неверный формат: {self.settings_file}")
+        except json.JSONDecodeError as e:
+            logger.error(f"Ошибка парсинга JSON в настройках: {e}", exc_info=True)
         except Exception as e:
-            print(f"Ошибка загрузки настроек: {e}")
+            logger.error(f"Ошибка загрузки настроек: {e}", exc_info=True)
         return settings
     
     def save_settings(self, settings_dict: Optional[Dict[str, Any]] = None) -> bool:
@@ -61,7 +70,7 @@ class SettingsManager:
             self.settings = settings_dict
             return True
         except Exception as e:
-            print(f"Ошибка сохранения настроек: {e}")
+            logger.error(f"Ошибка сохранения настроек: {e}", exc_info=True)
             return False
     
     def get(self, key: str, default: Any = None) -> Any:
@@ -115,8 +124,12 @@ class TemplatesManager:
                     loaded = json.load(f)
                     if isinstance(loaded, dict):
                         templates = loaded
+                    else:
+                        logger.warning(f"Файл шаблонов содержит неверный формат: {self.templates_file}")
+        except json.JSONDecodeError as e:
+            logger.error(f"Ошибка парсинга JSON в шаблонах: {e}", exc_info=True)
         except Exception as e:
-            print(f"Ошибка загрузки шаблонов: {e}")
+            logger.error(f"Ошибка загрузки шаблонов: {e}", exc_info=True)
         return templates
     
     def save_templates(self, templates: Optional[Dict[str, Any]] = None) -> bool:
@@ -136,7 +149,7 @@ class TemplatesManager:
             self.templates = templates
             return True
         except Exception as e:
-            print(f"Ошибка сохранения шаблонов: {e}")
+            logger.error(f"Ошибка сохранения шаблонов: {e}", exc_info=True)
             return False
     
     def get(self, key: str, default: Any = None) -> Any:

@@ -1,9 +1,13 @@
 """Модуль для работы с логированием."""
 
+import logging
 import tkinter as tk
 from datetime import datetime
 from tkinter import filedialog, messagebox
 from typing import Optional
+
+# Настройка логирования для модуля
+module_logger = logging.getLogger(__name__)
 
 
 class Logger:
@@ -83,5 +87,6 @@ class Logger:
                 messagebox.showinfo("Успех", f"Лог успешно выгружен в файл:\n{filename}")
                 self.log(f"Лог выгружен в файл: {filename}")
         except Exception as e:
+            module_logger.error(f"Не удалось выгрузить лог: {e}", exc_info=True)
             messagebox.showerror("Ошибка", f"Не удалось выгрузить лог:\n{str(e)}")
 

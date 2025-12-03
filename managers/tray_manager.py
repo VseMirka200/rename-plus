@@ -1,9 +1,10 @@
 """Модуль для управления системным треем."""
 
+import logging
 import os
 import threading
 import tkinter as tk
-from typing import Optional
+from typing import Callable, Optional
 
 # Попытка импортировать pystray
 HAS_PYSTRAY = False
@@ -20,8 +21,8 @@ class TrayManager:
     """Класс для управления системным треем."""
     
     def __init__(self, root: tk.Tk, 
-                 show_callback: callable,
-                 quit_callback: callable):
+                 show_callback: Callable[[], None],
+                 quit_callback: Callable[[], None]):
         """Инициализация менеджера трея.
         
         Args:
@@ -41,9 +42,9 @@ class TrayManager:
             return
         
         try:
-            icon_path = os.path.join(os.path.dirname(__file__), "materials", "icon", "icon.ico")
+            icon_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "materials", "icon", "icon.ico")
             if not os.path.exists(icon_path):
-                icon_path = os.path.join(os.path.dirname(__file__), "materials", "icon", "1000x1000.png")
+                icon_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "materials", "icon", "1000x1000.png")
             
             if os.path.exists(icon_path):
                 img = PILImage.open(icon_path)
@@ -54,13 +55,14 @@ class TrayManager:
                     item('Выход', self.quit_app)
                 )
                 
-                self.tray_icon = pystray.Icon("Назови", img, "Назови", menu)
+                self.tray_icon = pystray.Icon("Ренейм+", img, "Ренейм+", menu)
                 
                 # Запускаем трей в отдельном потоке
                 self.tray_thread = threading.Thread(target=self._run_tray, daemon=True)
                 self.tray_thread.start()
         except Exception as e:
-            print(f"Не удалось настроить трей-иконку: {e}")
+            logger = logging.getLogger(__name__)
+            logger.error(f"Не удалось настроить трей-иконку: {e}", exc_info=True)
     
     def _run_tray(self) -> None:
         """Запуск трей-иконки."""

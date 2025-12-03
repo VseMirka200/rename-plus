@@ -5,7 +5,7 @@ from typing import Dict, List, Optional
 import tkinter as tk
 from tkinter import messagebox
 
-from rename_methods import (
+from .rename_methods import (
     AddRemoveMethod,
     CaseMethod,
     MetadataMethod,
@@ -60,7 +60,7 @@ class MethodsManager:
     
     def reset_counters(self) -> None:
         """Сброс счетчиков нумерации перед применением."""
-        from rename_methods import NumberingMethod, NewNameMethod
+        from .rename_methods import NumberingMethod, NewNameMethod
         for method in self.methods:
             if isinstance(method, NumberingMethod):
                 method.reset()

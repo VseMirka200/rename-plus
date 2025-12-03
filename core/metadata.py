@@ -3,9 +3,12 @@
 Поддерживает изображения (через Pillow) и базовые метаданные файлов
 """
 
+import logging
 import os
 from datetime import datetime
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 
 class MetadataExtractor:
@@ -71,7 +74,8 @@ class MetadataExtractor:
             with self.Image.open(file_path) as img:
                 width, height = img.size
                 return f"{width}x{height}"
-        except Exception:
+        except Exception as e:
+            logger.debug(f"Не удалось извлечь размеры изображения {file_path}: {e}")
             return None
     
     def _extract_width(self, file_path: str) -> Optional[str]:
@@ -82,7 +86,8 @@ class MetadataExtractor:
         try:
             with self.Image.open(file_path) as img:
                 return str(img.size[0])
-        except Exception:
+        except Exception as e:
+            logger.debug(f"Не удалось извлечь ширину изображения {file_path}: {e}")
             return None
     
     def _extract_height(self, file_path: str) -> Optional[str]:
@@ -93,7 +98,8 @@ class MetadataExtractor:
         try:
             with self.Image.open(file_path) as img:
                 return str(img.size[1])
-        except Exception:
+        except Exception as e:
+            logger.debug(f"Не удалось извлечь высоту изображения {file_path}: {e}")
             return None
     
     def _extract_date_created(self, file_path: str) -> Optional[str]:
@@ -112,7 +118,8 @@ class MetadataExtractor:
             
             dt = datetime.fromtimestamp(timestamp)
             return dt.strftime("%Y-%m-%d")
-        except Exception:
+        except Exception as e:
+            logger.debug(f"Не удалось извлечь дату создания {file_path}: {e}")
             return None
     
     def _extract_date_modified(self, file_path: str) -> Optional[str]:
@@ -122,7 +129,8 @@ class MetadataExtractor:
             timestamp = stat.st_mtime
             dt = datetime.fromtimestamp(timestamp)
             return dt.strftime("%Y-%m-%d")
-        except Exception:
+        except Exception as e:
+            logger.debug(f"Не удалось извлечь дату изменения {file_path}: {e}")
             return None
     
     def _extract_file_size(self, file_path: str) -> Optional[str]:
@@ -139,7 +147,8 @@ class MetadataExtractor:
                 return f"{size / (1024 * 1024):.1f}MB"
             else:
                 return f"{size / (1024 * 1024 * 1024):.1f}GB"
-        except Exception:
+        except Exception as e:
+            logger.debug(f"Не удалось извлечь размер файла {file_path}: {e}")
             return None
     
     def _extract_custom_tag(self, tag: str, file_path: str) -> Optional[str]:
@@ -160,8 +169,8 @@ class MetadataExtractor:
                         tag_name = self.TAGS.get(tag_id, tag_id)
                         if tag.lower() == f"{{{tag_name.lower()}}}":
                             return str(value)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Не удалось извлечь пользовательский тег {tag} из {file_path}: {e}")
         
         return None
 

@@ -1,6 +1,8 @@
 """Модуль для обработки drag and drop функциональности."""
 
+import logging
 import os
+import re
 import sys
 import tkinter as tk
 from typing import Callable, List, Optional
@@ -63,12 +65,19 @@ def _on_drop_files(event: tk.Event, callback: Callable[[List[str]], None]) -> No
         # Обрабатываем строку с путями (формат зависит от платформы)
         files = []
         if sys.platform == 'win32':
-            # Windows: пути разделены пробелами, но могут быть в фигурных скобках
-            files_str = files_str.strip('{}')
-            files = [f.strip() for f in files_str.split('} {')]
+            # Windows: пути могут быть в фигурных скобках {path1} {path2}
+            # Используем regex для более надежного парсинга
+            files = re.findall(r'\{([^}]+)\}', files_str)
+            if not files:
+                # Если нет фигурных скобок, пробуем разделить по пробелам
+                # Но это может быть проблематично для путей с пробелами
+                files = files_str.split()
         else:
             # Linux/Mac: пути разделены пробелами
             files = files_str.split()
+        
+        # Очищаем пути от лишних пробелов и кавычек
+        files = [f.strip().strip('"').strip("'") for f in files if f.strip()]
         
         # Фильтруем только существующие файлы
         valid_files = [f for f in files if os.path.exists(f) and os.path.isfile(f)]
@@ -76,7 +85,8 @@ def _on_drop_files(event: tk.Event, callback: Callable[[List[str]], None]) -> No
         if valid_files:
             callback(valid_files)
     except Exception as e:
-        print(f"Ошибка при обработке drag and drop: {e}")
+        logger = logging.getLogger(__name__)
+        logger.error(f"Ошибка при обработке drag and drop: {e}", exc_info=True)
 
 
 def setup_treeview_drag_drop(tree: tk.ttk.Treeview, 

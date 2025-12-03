@@ -1,13 +1,17 @@
 """Модуль для управления установкой библиотек."""
 
 import json
+import logging
 import os
+import re
 import subprocess
 import sys
 import threading
 import tkinter as tk
 from tkinter import messagebox, ttk
 from typing import List, Dict, Callable, Optional
+
+logger = logging.getLogger(__name__)
 
 
 class LibraryManager:
@@ -215,6 +219,13 @@ class LibraryManager:
             
             for lib in libraries:
                 try:
+                    # Валидация имени библиотеки для безопасности
+                    if not re.match(r'^[a-zA-Z0-9_-]+$', lib):
+                        error_msg = f"Недопустимое имя библиотеки: {lib}"
+                        self.root.after(0, lambda l=lib, e=error_msg: progress_text.insert(tk.END, f"✗ Ошибка валидации {l}: {e}\n"))
+                        error_count += 1
+                        continue
+                    
                     self.root.after(0, lambda l=lib: status_label.config(text=f"Установка {l}..."))
                     self.root.after(0, lambda l=lib: progress_text.insert(tk.END, f"Установка {l}...\n"))
                     self.root.after(0, lambda: progress_text.see(tk.END))
@@ -238,8 +249,8 @@ class LibraryManager:
                         error_count += 1
                         try:
                             self.log(f"Ошибка установки {lib}: {error_msg[:500]}")
-                        except:
-                            pass
+                        except Exception as e:
+                            logger.debug(f"Не удалось залогировать ошибку установки {lib}: {e}")
                     
                     self.root.after(0, lambda: progress_text.see(tk.END))
                     self.root.after(0, lambda: progress_window.update())

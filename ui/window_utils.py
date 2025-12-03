@@ -26,16 +26,24 @@ def set_window_icon(window: tk.Tk, icon_photos_list: Optional[list] = None) -> N
     """
     try:
         # Сначала пробуем использовать .ico файл для Windows
-        ico_path = os.path.join(os.path.dirname(__file__), "materials", "icon", "icon.ico")
+        # Относительный путь от текущего файла
+        ico_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "materials", "icon", "icon.ico")
+        
+        # Нормализуем путь для корректной работы
+        ico_path = os.path.normpath(ico_path)
+        
         if os.path.exists(ico_path):
             try:
+                # Преобразуем в абсолютный путь для надежности
+                ico_path = os.path.abspath(ico_path)
                 window.iconbitmap(ico_path)
                 return
-            except Exception:
+            except Exception as e:
+                print(f"Не удалось установить иконку через iconbitmap: {e}")
                 pass
         
         # Путь к PNG иконке
-        icon_path = os.path.join(os.path.dirname(__file__), "materials", "icon", "1000x1000.png")
+        icon_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "materials", "icon", "1000x1000.png")
         
         if os.path.exists(icon_path):
             if HAS_PIL:
