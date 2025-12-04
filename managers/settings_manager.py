@@ -5,6 +5,13 @@ import logging
 import os
 from typing import Dict, Any, Optional
 
+try:
+    from config.constants import SETTINGS_FILE, TEMPLATES_FILE
+except ImportError:
+    # Fallback если константы не доступны
+    SETTINGS_FILE = ".nazovi_settings.json"
+    TEMPLATES_FILE = ".nazovi_templates.json"
+
 # Настройка логирования
 logger = logging.getLogger(__name__)
 
@@ -27,7 +34,7 @@ class SettingsManager:
         """
         if settings_file is None:
             settings_file = os.path.join(
-                os.path.expanduser("~"), ".nazovi_settings.json"
+                os.path.expanduser("~"), SETTINGS_FILE
             )
         self.settings_file = settings_file
         self.settings = self.load_settings()
@@ -106,7 +113,7 @@ class TemplatesManager:
         """
         if templates_file is None:
             templates_file = os.path.join(
-                os.path.expanduser("~"), ".nazovi_templates.json"
+                os.path.expanduser("~"), TEMPLATES_FILE
             )
         self.templates_file = templates_file
         self.templates = self.load_templates()

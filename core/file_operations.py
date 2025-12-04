@@ -1,9 +1,20 @@
 """Модуль для операций с файлами."""
 
+import logging
 import os
 import threading
 from pathlib import Path
 from typing import Callable, Dict, List, Optional
+
+# Настройка логирования
+logger = logging.getLogger(__name__)
+
+# Импорт менеджера резервных копий (опционально)
+try:
+    from .backup_manager import BackupManager
+    HAS_BACKUP = True
+except ImportError:
+    HAS_BACKUP = False
 
 
 def add_file_to_list(file_path: str, files_list: List[Dict]) -> Optional[Dict]:
@@ -20,9 +31,13 @@ def add_file_to_list(file_path: str, files_list: List[Dict]) -> Optional[Dict]:
         return None
     
     # Проверка на дубликаты
+    normalized_path = os.path.normpath(os.path.abspath(file_path))
     for existing_file in files_list:
-        if existing_file['path'] == file_path:
-            return None
+        existing_path = existing_file.get('full_path') or existing_file.get('path')
+        if existing_path:
+            existing_path = os.path.normpath(os.path.abspath(existing_path))
+            if existing_path == normalized_path:
+                return None
     
     # Получаем имя файла и расширение
     path_obj = Path(file_path)
@@ -106,20 +121,44 @@ def check_conflicts(files_list: List[Dict]) -> None:
 
 def rename_files_thread(files_to_rename: List[Dict], 
                         callback: Callable[[int, int, List[Dict]], None],
-                        log_callback: Optional[Callable[[str], None]] = None) -> None:
+                        log_callback: Optional[Callable[[str], None]] = None,
+                        backup_manager: Optional[BackupManager] = None,
+                        progress_callback: Optional[Callable[[int, int, str], None]] = None,
+                        cancel_var: Optional[threading.Event] = None) -> None:
     """Переименование файлов в отдельном потоке.
     
     Args:
         files_to_rename: Список файлов для переименования
         callback: Функция обратного вызова после завершения
         log_callback: Функция для логирования (опционально)
+        backup_manager: Менеджер резервных копий (опционально)
+        progress_callback: Функция для обновления прогресса (current, total, filename)
+        cancel_var: Событие для отмены операции (опционально)
     """
     def rename_worker():
         success_count = 0
         error_count = 0
         renamed_files = []
+        total = len(files_to_rename)
         
-        for file_data in files_to_rename:
+        # Создаем резервные копии, если включено
+        backups = {}
+        if backup_manager and HAS_BACKUP:
+            try:
+                backups = backup_manager.create_backups(files_to_rename)
+                if backups and log_callback:
+                    log_callback(f"Создано резервных копий: {len(backups)}")
+            except Exception as e:
+                logger.error(f"Ошибка при создании резервных копий: {e}")
+                if log_callback:
+                    log_callback(f"Предупреждение: не удалось создать резервные копии")
+        
+        for i, file_data in enumerate(files_to_rename):
+            # Проверка отмены
+            if cancel_var and cancel_var.is_set():
+                if log_callback:
+                    log_callback("Операция переименования отменена пользователем")
+                break
             old_path = None
             new_path = None
             try:
@@ -245,6 +284,13 @@ def rename_files_thread(files_to_rename: List[Dict],
                 if old_path and os.path.exists(old_path):
                     if log_callback:
                         log_callback(f"Исходный файл сохранен: {os.path.basename(old_path)}")
+            
+            # Обновление прогресса даже при ошибке
+            if progress_callback:
+                try:
+                    progress_callback(i + 1, total, file_data.get('old_name', 'unknown'))
+                except Exception:
+                    pass
         
         # Вызываем callback в главном потоке
         if callback:

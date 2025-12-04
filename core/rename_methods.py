@@ -1,13 +1,13 @@
-"""
-Модуль методов переименования файлов
-Реализует различные стратегии переименования
+"""Модуль методов переименования файлов.
+
+Реализует различные стратегии переименования.
 """
 
 import logging
 import re
 from abc import ABC, abstractmethod
-from typing import Tuple, Optional
 from datetime import datetime
+from typing import Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -409,6 +409,53 @@ class NewNameMethod(RenameMethod):
                 else:
                     new_name = new_name.replace("{file_size}", "")
         
+        # Условная логика в шаблонах: {if:condition:then:else}
+        # Пример: {if:{ext}==jpg:IMG_{n}:FILE_{n}}
+        import re as regex_module
+        conditional_pattern = r'\{if:([^:]+):([^:]+):([^}]+)\}'
+        matches = regex_module.finditer(conditional_pattern, new_name)
+        for match in reversed(list(matches)):  # Обратный порядок для корректной замены
+            condition = match.group(1)
+            then_part = match.group(2)
+            else_part = match.group(3)
+            
+            # Вычисляем условие (простая проверка равенства)
+            result = False
+            if '==' in condition:
+                parts = condition.split('==', 1)
+                left = parts[0].strip().strip('"\'')
+                right = parts[1].strip().strip('"\'')
+                # Подставляем переменные
+                left = self._substitute_variables(left, name, extension, file_path)
+                result = left == right
+            elif '!=' in condition:
+                parts = condition.split('!=', 1)
+                left = parts[0].strip().strip('"\'')
+                right = parts[1].strip().strip('"\'')
+                left = self._substitute_variables(left, name, extension, file_path)
+                result = left != right
+            elif 'in' in condition:
+                parts = condition.split(' in ', 1)
+                left = parts[0].strip().strip('"\'')
+                right = parts[1].strip().strip('"\'')
+                left = self._substitute_variables(left, name, extension, file_path)
+                right = self._substitute_variables(right, name, extension, file_path)
+                result = left in right
+            else:
+                # Простая проверка на существование/непустоту
+                var = self._substitute_variables(condition, name, extension, file_path)
+                result = bool(var and str(var).strip())
+            
+            # Подставляем результат
+            if result:
+                replacement = then_part
+            else:
+                replacement = else_part
+            
+            # Подставляем переменные в результат
+            replacement = self._substitute_variables(replacement, name, extension, file_path)
+            new_name = new_name[:match.start()] + replacement + new_name[match.end():]
+        
         # Замена {name} в самом конце (если есть в шаблоне)
         # Если {name} нет в шаблоне, то шаблон полностью заменяет имя
         if "{name}" in new_name:
@@ -418,6 +465,33 @@ class NewNameMethod(RenameMethod):
         self.file_number += 1
         
         return new_name, extension
+    
+    def _substitute_variables(self, text: str, name: str, extension: str, file_path: str) -> str:
+        """Подстановка переменных в текст.
+        
+        Args:
+            text: Текст с переменными
+            name: Имя файла
+            extension: Расширение
+            file_path: Путь к файлу
+            
+        Returns:
+            Текст с подставленными переменными
+        """
+        result = text
+        ext_without_dot = extension.lstrip('.') if extension else ""
+        result = result.replace("{ext}", ext_without_dot)
+        result = result.replace("{name}", name)
+        
+        if self.metadata_extractor:
+            # Подставляем метаданные
+            for tag in ["{width}", "{height}", "{date_created}", "{date_modified}", "{file_size}",
+                       "{artist}", "{title}", "{album}", "{year}", "{track}", "{genre}"]:
+                if tag in result:
+                    value = self.metadata_extractor.extract(tag, file_path)
+                    result = result.replace(tag, value or "")
+        
+        return result
     
     def reset(self):
         """Сброс счетчика (вызывается перед применением к новому списку)"""

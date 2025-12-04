@@ -1,6 +1,6 @@
-"""
-Модуль для извлечения метаданных из файлов
-Поддерживает изображения (через Pillow) и базовые метаданные файлов
+"""Модуль для извлечения метаданных из файлов.
+
+Поддерживает изображения (через Pillow) и базовые метаданные файлов.
 """
 
 import logging
@@ -17,6 +17,7 @@ class MetadataExtractor:
     def __init__(self):
         """Инициализация экстрактора метаданных"""
         self.pillow_available = False
+        self.mutagen_available = False
         
         # Попытка импортировать Pillow для работы с изображениями
         try:
@@ -27,6 +28,16 @@ class MetadataExtractor:
             self.pillow_available = True
         except ImportError:
             self.pillow_available = False
+        
+        # Попытка импортировать mutagen для работы с аудио
+        try:
+            from mutagen import File as MutagenFile
+            from mutagen.id3 import ID3NoHeaderError
+            self.MutagenFile = MutagenFile
+            self.ID3NoHeaderError = ID3NoHeaderError
+            self.mutagen_available = True
+        except ImportError:
+            self.mutagen_available = False
     
     def extract(self, tag: str, file_path: str) -> Optional[str]:
         """
@@ -59,6 +70,19 @@ class MetadataExtractor:
             return self._extract_file_size(file_path)
         elif tag == "{filename}":
             return os.path.basename(file_path)
+        # Метаданные аудио
+        elif tag == "{artist}":
+            return self._extract_audio_tag(file_path, 'artist')
+        elif tag == "{title}":
+            return self._extract_audio_tag(file_path, 'title')
+        elif tag == "{album}":
+            return self._extract_audio_tag(file_path, 'album')
+        elif tag == "{year}":
+            return self._extract_audio_tag(file_path, 'date')
+        elif tag == "{track}":
+            return self._extract_audio_tag(file_path, 'tracknumber')
+        elif tag == "{genre}":
+            return self._extract_audio_tag(file_path, 'genre')
         elif tag.startswith("{") and tag.endswith("}"):
             # Попытка извлечь пользовательский тег
             return self._extract_custom_tag(tag, file_path)
@@ -149,6 +173,63 @@ class MetadataExtractor:
                 return f"{size / (1024 * 1024 * 1024):.1f}GB"
         except Exception as e:
             logger.debug(f"Не удалось извлечь размер файла {file_path}: {e}")
+            return None
+    
+    def _extract_audio_tag(self, file_path: str, tag_name: str) -> Optional[str]:
+        """Извлечение метаданных аудио файла.
+        
+        Args:
+            file_path: Путь к аудио файлу
+            tag_name: Имя тега (artist, title, album, date, tracknumber, genre)
+            
+        Returns:
+            Значение тега или None
+        """
+        if not self.mutagen_available:
+            return None
+        
+        try:
+            audio_file = self.MutagenFile(file_path)
+            if audio_file is None:
+                return None
+            
+            # Получаем теги
+            tags = audio_file.tags
+            if tags is None:
+                return None
+            
+            # Маппинг имен тегов для разных форматов
+            tag_mapping = {
+                'artist': ['TPE1', 'ARTIST', '©ART'],
+                'title': ['TIT2', 'TITLE', '©nam'],
+                'album': ['TALB', 'ALBUM', '©alb'],
+                'date': ['TDRC', 'DATE', '©day'],
+                'tracknumber': ['TRCK', 'TRACKNUMBER', 'TRACK', 'trkn'],
+                'genre': ['TCON', 'GENRE', '©gen']
+            }
+            
+            # Получаем список возможных ключей для тега
+            possible_keys = tag_mapping.get(tag_name.lower(), [tag_name.upper()])
+            
+            # Пытаемся получить значение по разным ключам
+            for key in possible_keys:
+                if key in tags:
+                    value = tags[key]
+                    # Обработка списков и кортежей
+                    if isinstance(value, (list, tuple)) and len(value) > 0:
+                        value = value[0]
+                    # Обработка объектов с текстовым представлением
+                    if hasattr(value, 'text'):
+                        value = value.text[0] if value.text else None
+                    if value:
+                        return str(value).strip()
+            
+            return None
+        except self.ID3NoHeaderError:
+            # Файл не имеет ID3 заголовка, пробуем другие форматы
+            return None
+        except Exception as e:
+            logger.debug(f"Не удалось извлечь аудио тег {tag_name} из {file_path}: {e}")
             return None
     
     def _extract_custom_tag(self, tag: str, file_path: str) -> Optional[str]:

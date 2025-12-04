@@ -1,0 +1,62 @@
+[MASTER]
+# Используемые плагины
+load-plugins=
+
+[MESSAGES CONTROL]
+# Отключаем некоторые проверки для совместимости
+disable=
+    missing-docstring,
+    too-few-public-methods,
+    too-many-instance-attributes,
+    too-many-public-methods,
+    too-many-locals,
+    too-many-branches,
+    too-many-statements,
+    import-outside-toplevel
+
+[FORMAT]
+# Максимальная длина строки
+max-line-length=120
+
+# Стиль именования
+naming-style=snake_case
+
+[BASIC]
+# Хорошие имена переменных
+good-names=i,j,k,ex,Run,_,id,db,ok
+
+[DESIGN]
+# Максимальное количество аргументов
+max-args=10
+
+# Максимальное количество атрибутов
+max-attributes=15
+
+# Максимальная длина имени
+max-name-length=50
+
+# Максимальное количество возвращаемых значений
+max-returns=8
+
+# Максимальное количество веток
+max-branches=15
+
+# Максимальное количество локальных переменных
+max-locals=20
+
+# Максимальное количество операторов
+max-statements=60
+
+# Максимальное количество родителей
+max-parents=7
+
+# Максимальное количество публичных методов
+max-public-methods=25
+
+# Максимальное количество атрибутов экземпляра
+max-attributes=15
+
+[IMPORTS]
+# Игнорировать импорты
+ignored-modules=tkinter,PIL,pystray,tkinterdnd2
+

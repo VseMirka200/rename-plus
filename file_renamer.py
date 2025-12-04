@@ -1,5 +1,6 @@
 """Модуль для переименования файлов с графическим интерфейсом."""
 
+# Стандартная библиотека
 import logging
 import os
 import re
@@ -7,30 +8,26 @@ import sys
 import threading
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 
+# Сторонние библиотеки
 import tkinter as tk
-from tkinter import filedialog, messagebox, ttk, simpledialog
+from tkinter import filedialog, messagebox, simpledialog, ttk
 
-# Настройка логирования
-logger = logging.getLogger(__name__)
-
-# Попытка импортировать PIL для закругленных углов
+# Опциональные сторонние библиотеки
 try:
     from PIL import Image, ImageTk
     HAS_PIL = True
 except ImportError:
     HAS_PIL = False
 
-# Попытка импортировать tkinterdnd2 для лучшей поддержки drag and drop
 HAS_TKINTERDND2 = False
 try:
     from tkinterdnd2 import DND_FILES, TkinterDnD
     HAS_TKINTERDND2 = True
 except ImportError:
-    HAS_TKINTERDND2 = False
+    pass
 
-# Попытка импортировать pystray для системного трея
 HAS_PYSTRAY = False
 try:
     import pystray
@@ -38,9 +35,17 @@ try:
     from PIL import Image as PILImage
     HAS_PYSTRAY = True
 except ImportError:
-    HAS_PYSTRAY = False
+    pass
 
+# Локальные импорты - core
+from core.file_operations import (
+    add_file_to_list,
+    check_conflicts,
+    rename_files_thread,
+    validate_filename,
+)
 from core.metadata import MetadataExtractor
+from core.methods_manager import MethodsManager
 from core.rename_methods import (
     AddRemoveMethod,
     CaseMethod,
@@ -51,20 +56,93 @@ from core.rename_methods import (
     RenameMethod,
     ReplaceMethod,
 )
-from ui.ui_components import UIComponents, StyleManager
+
+# Локальные импорты - managers
 from managers.library_manager import LibraryManager
 from managers.settings_manager import SettingsManager, TemplatesManager
-from ui.window_utils import set_window_icon, bind_mousewheel, setup_window_resize_handler
-from core.file_operations import (
-    add_file_to_list,
-    validate_filename,
-    check_conflicts,
-    rename_files_thread
-)
-from ui.drag_drop import setup_drag_drop as setup_drag_drop_util, setup_treeview_drag_drop
 from managers.tray_manager import TrayManager
+
+# Локальные импорты - ui
+from ui.drag_drop import (
+    setup_drag_drop as setup_drag_drop_util,
+    setup_treeview_drag_drop,
+)
+from ui.ui_components import StyleManager, UIComponents
+from ui.window_utils import (
+    bind_mousewheel,
+    set_window_icon,
+    setup_window_resize_handler,
+)
+
+# Локальные импорты - utils
 from utils.logger import Logger
-from core.methods_manager import MethodsManager
+
+# Опциональные локальные импорты
+HAS_BACKUP_MANAGER = False
+try:
+    from core.backup_manager import BackupManager
+    HAS_BACKUP_MANAGER = True
+except ImportError:
+    pass
+
+HAS_HISTORY = False
+try:
+    from core.history_manager import HistoryManager
+    HAS_HISTORY = True
+except ImportError:
+    pass
+
+HAS_THEME = False
+try:
+    from ui.theme_manager import ThemeManager
+    HAS_THEME = True
+except ImportError:
+    pass
+
+HAS_NOTIFICATIONS = False
+try:
+    from utils.notifications import NotificationManager
+    HAS_NOTIFICATIONS = True
+except ImportError:
+    pass
+
+HAS_STATISTICS = False
+try:
+    from utils.statistics import StatisticsManager
+    HAS_STATISTICS = True
+except ImportError:
+    pass
+
+HAS_ERROR_HANDLER = False
+try:
+    from utils.error_handler import ErrorHandler
+    HAS_ERROR_HANDLER = True
+except ImportError:
+    pass
+
+HAS_PLUGINS = False
+try:
+    from core.plugins import PluginManager
+    HAS_PLUGINS = True
+except ImportError:
+    pass
+
+HAS_I18N = False
+try:
+    from utils.i18n import I18nManager
+    HAS_I18N = True
+except ImportError:
+    pass
+
+HAS_UPDATE_CHECKER = False
+try:
+    from utils.update_checker import UpdateChecker
+    HAS_UPDATE_CHECKER = True
+except ImportError:
+    pass
+
+# Настройка логирования
+logger = logging.getLogger(__name__)
 
 
 class FileRenamerApp:
@@ -79,7 +157,8 @@ class FileRenamerApp:
         self.root = root
         self.root.title("Ренейм+")
         self.root.geometry("1000x600")
-        self.root.minsize(1000, 600)  # Минимальный размер соответствует начальному размеру
+        # Минимальный размер соответствует начальному размеру
+        self.root.minsize(1000, 600)
         
         # Установка иконки приложения
         self._icon_photos = []
@@ -89,9 +168,21 @@ class FileRenamerApp:
         self.root.columnconfigure(0, weight=1)
         self.root.rowconfigure(0, weight=1)
         
+        # Менеджеры настроек и шаблонов (нужно создать раньше для использования в теме)
+        self.settings_manager = SettingsManager()
+        self.settings = self.settings_manager.settings
+        self.templates_manager = TemplatesManager()
+        self.saved_templates = self.templates_manager.templates
+        
         # Настройка цветовой схемы и стилей
         self.style_manager = StyleManager()
-        self.colors = self.style_manager.colors
+        # Менеджер тем
+        if HAS_THEME:
+            theme_name = self.settings_manager.get('theme', 'light')
+            self.theme_manager = ThemeManager(theme_name)
+            self.colors = self.theme_manager.colors
+        else:
+            self.colors = self.style_manager.colors
         self.style = self.style_manager.style
         self.ui_components = UIComponents()
         
@@ -105,7 +196,11 @@ class FileRenamerApp:
         # Список файлов: {path, old_name, new_name, extension, status}
         self.files: List[Dict] = []
         self.undo_stack: List[List[Dict]] = []  # Стек для отмены
+        self.redo_stack: List[List[Dict]] = []  # Стек для повтора
         # Методы переименования (используем methods_manager)
+        
+        # Флаг отмены переименования
+        self.cancel_rename_var = None
         
         # Окна для вкладок
         self.windows = {
@@ -126,13 +221,8 @@ class FileRenamerApp:
         
         # Трей-иконка
         self.tray_manager = None
-        self.minimize_to_tray = False  # По умолчанию закрывать приложение при закрытии окна
-        
-        # Менеджеры настроек и шаблонов
-        self.settings_manager = SettingsManager()
-        self.settings = self.settings_manager.settings
-        self.templates_manager = TemplatesManager()
-        self.saved_templates = self.templates_manager.templates
+        # По умолчанию закрывать приложение при закрытии окна
+        self.minimize_to_tray = False
         
         # Менеджер библиотек
         self.library_manager = LibraryManager(
@@ -140,11 +230,98 @@ class FileRenamerApp:
             log_callback=lambda msg: self.logger.log(msg)
         )
         
+        # Менеджер резервных копий
+        self.backup_manager = None
+        if HAS_BACKUP_MANAGER:
+            try:
+                backup_enabled = self.settings_manager.get('backup', False)
+                if backup_enabled:
+                    self.backup_manager = BackupManager()
+            except Exception as e:
+                logger.debug(f"Не удалось инициализировать менеджер резервных копий: {e}")
+        
+        # Менеджер истории операций
+        self.history_manager = None
+        if HAS_HISTORY:
+            try:
+                self.history_manager = HistoryManager()
+            except Exception as e:
+                logger.debug(f"Не удалось инициализировать менеджер истории: {e}")
+        
+        # Менеджер уведомлений
+        self.notification_manager = None
+        if HAS_NOTIFICATIONS:
+            try:
+                notifications_enabled = self.settings_manager.get('notifications', True)
+                self.notification_manager = NotificationManager(enabled=notifications_enabled)
+            except Exception as e:
+                logger.debug(f"Не удалось инициализировать менеджер уведомлений: {e}")
+        
+        # Менеджер статистики
+        self.statistics_manager = None
+        if HAS_STATISTICS:
+            try:
+                self.statistics_manager = StatisticsManager()
+            except Exception as e:
+                logger.debug(f"Не удалось инициализировать менеджер статистики: {e}")
+        
+        # Обработчик ошибок
+        self.error_handler = None
+        if HAS_ERROR_HANDLER:
+            try:
+                self.error_handler = ErrorHandler()
+            except Exception as e:
+                logger.debug(f"Не удалось инициализировать обработчик ошибок: {e}")
+        
+        # Менеджер плагинов
+        self.plugin_manager = None
+        if HAS_PLUGINS:
+            try:
+                self.plugin_manager = PluginManager()
+                logger.debug(f"Загружено плагинов: {len(self.plugin_manager.list_plugins())}")
+            except Exception as e:
+                logger.debug(f"Не удалось инициализировать менеджер плагинов: {e}")
+        
+        # Менеджер переводов
+        self.i18n_manager = None
+        if HAS_I18N:
+            try:
+                language = self.settings_manager.get('language', 'ru')
+                self.i18n_manager = I18nManager(language=language)
+            except Exception as e:
+                logger.debug(f"Не удалось инициализировать менеджер переводов: {e}")
+        
+        # Проверка обновлений
+        self.update_checker = None
+        if HAS_UPDATE_CHECKER:
+            try:
+                check_updates = self.settings_manager.get('check_updates', True)
+                if check_updates:
+                    self.update_checker = UpdateChecker()
+                    # Проверяем обновления в фоне
+                    self.root.after(5000, self._check_updates_background)
+            except Exception as e:
+                logger.debug(f"Не удалось инициализировать проверку обновлений: {e}")
+        
         # Создание интерфейса
         self.create_widgets()
         
         # Привязка горячих клавиш
         self.setup_hotkeys()
+    
+    def _check_updates_background(self):
+        """Проверка обновлений в фоновом режиме."""
+        if self.update_checker:
+            try:
+                update_info = self.update_checker.check_for_updates()
+                if update_info and update_info.get('available'):
+                    # Показываем уведомление об обновлении
+                    if self.notification_manager:
+                        self.notification_manager.notify_info(
+                            f"Доступно обновление {update_info['latest_version']}"
+                        )
+            except Exception as e:
+                logger.debug(f"Ошибка проверки обновлений: {e}")
         
         # Настройка drag and drop для файлов из проводника
         self.setup_drag_drop()
@@ -210,27 +387,51 @@ class FileRenamerApp:
     
     def update_tree_columns(self):
         """Обновление размеров колонок таблицы в соответствии с размером окна"""
-        if hasattr(self, 'list_frame') and hasattr(self, 'tree') and self.list_frame and self.tree:
+        has_list_frame = hasattr(self, 'list_frame')
+        has_tree = hasattr(self, 'tree')
+        if has_list_frame and has_tree and self.list_frame and self.tree:
             try:
                 list_frame_width = self.list_frame.winfo_width()
                 if list_frame_width > 100:  # Минимальная ширина для расчетов
                     # Вычитаем ширину скроллбара (примерно 20px) и отступы
-                    available_width = max(list_frame_width - 30, 200)  # Минимальная ширина уменьшена
+                    # Минимальная ширина уменьшена
+                    available_width = max(list_frame_width - 30, 200)
                     
-                    # Убеждаемся, что минимальные ширины не слишком большие для маленьких окон
+                    # Убеждаемся, что минимальные ширины не слишком большие
                     min_width_old = max(50, int(available_width * 0.15))
                     min_width_new = max(50, int(available_width * 0.15))
                     min_width_ext = max(35, int(available_width * 0.08))
                     min_width_path = max(60, int(available_width * 0.25))
                     min_width_status = max(40, int(available_width * 0.10))
                     
-                    self.tree.column("old_name", width=int(available_width * 0.22), minwidth=min_width_old)
-                    self.tree.column("new_name", width=int(available_width * 0.22), minwidth=min_width_new)
-                    self.tree.column("extension", width=int(available_width * 0.10), minwidth=min_width_ext)
-                    self.tree.column("path", width=int(available_width * 0.35), minwidth=min_width_path)
-                    self.tree.column("status", width=int(available_width * 0.11), minwidth=min_width_status)
+                    self.tree.column(
+                        "old_name",
+                        width=int(available_width * 0.22),
+                        minwidth=min_width_old
+                    )
+                    self.tree.column(
+                        "new_name",
+                        width=int(available_width * 0.22),
+                        minwidth=min_width_new
+                    )
+                    self.tree.column(
+                        "extension",
+                        width=int(available_width * 0.10),
+                        minwidth=min_width_ext
+                    )
+                    self.tree.column(
+                        "path",
+                        width=int(available_width * 0.35),
+                        minwidth=min_width_path
+                    )
+                    self.tree.column(
+                        "status",
+                        width=int(available_width * 0.11),
+                        minwidth=min_width_status
+                    )
             except Exception as e:
-                pass
+                # Логируем ошибку, но не прерываем работу приложения
+                logger.debug(f"Ошибка обновления колонок таблицы: {e}")
     
     def update_scrollbar_visibility(self, widget, scrollbar, orientation='vertical'):
         """Автоматическое управление видимостью скроллбара.
@@ -402,8 +603,9 @@ class FileRenamerApp:
         # Используем обычный Frame для распределения пространства (50/50)
         main_container = tk.Frame(main_tab, bg=self.colors['bg_main'])
         main_container.grid(row=0, column=0, sticky="nsew")
-        main_container.columnconfigure(0, weight=6, uniform="panels")  # Левая панель занимает 60%
-        main_container.columnconfigure(1, weight=4, uniform="panels")  # Правая панель занимает 40%
+        # Левая панель занимает 60%, правая - 40%
+        main_container.columnconfigure(0, weight=6, uniform="panels")
+        main_container.columnconfigure(1, weight=4, uniform="panels")
         main_container.rowconfigure(0, weight=1)
         
         # Сохраняем ссылку на main_container для обновления размеров
@@ -415,8 +617,12 @@ class FileRenamerApp:
             main_container.columnconfigure(1, weight=4, uniform="panels")
             main_container.update_idletasks()
             # Дополнительное обновление после создания всех виджетов
-            self.root.after(500, lambda: main_container.columnconfigure(0, weight=6, uniform="panels"))
-            self.root.after(500, lambda: main_container.columnconfigure(1, weight=4, uniform="panels"))
+            def configure_columns():
+                main_container.columnconfigure(0, weight=6, uniform="panels")
+                main_container.columnconfigure(1, weight=4, uniform="panels")
+            
+            self.root.after(500, configure_columns)
+            self.root.after(500, configure_columns)
         
         self.root.after(100, update_column_config)
         self.root.after(300, update_column_config)
@@ -429,8 +635,11 @@ class FileRenamerApp:
                 # Проверяем, активна ли вкладка "Файлы"
                 if hasattr(self, 'main_notebook') and self.main_notebook:
                     try:
-                        selected_tab = self.main_notebook.index(self.main_notebook.select())
-                        if selected_tab != 0:  # Если не активна вкладка "Файлы", не обновляем
+                        selected_tab = self.main_notebook.index(
+                            self.main_notebook.select()
+                        )
+                        # Если не активна вкладка "Файлы", не обновляем
+                        if selected_tab != 0:
                             return
                     except (tk.TclError, AttributeError):
                         pass
@@ -453,11 +662,20 @@ class FileRenamerApp:
                         pass
         
         main_container.bind('<Configure>', on_resize)  # При изменении размера
-        main_tab.bind('<Configure>', lambda e: on_resize(e) if e.widget == main_tab else None)
+        def on_main_tab_configure(e):
+            if e.widget == main_tab:
+                on_resize(e)
+        
+        main_tab.bind('<Configure>', on_main_tab_configure)
         
         # Левая часть - список файлов
-        left_panel = ttk.LabelFrame(main_container, text=f"Список файлов (Файлов: {len(self.files)})", 
-                                    style='Card.TLabelframe', padding=6)
+        files_count = len(self.files)
+        left_panel = ttk.LabelFrame(
+            main_container,
+            text=f"Список файлов (Файлов: {files_count})",
+            style='Card.TLabelframe',
+            padding=6
+        )
         left_panel.grid(row=0, column=0, sticky="nsew", padx=(0, 2))
         left_panel.columnconfigure(0, weight=1)
         left_panel.rowconfigure(1, weight=1)  # Строка с таблицей файлов
@@ -465,6 +683,60 @@ class FileRenamerApp:
         # Сохраняем ссылку на left_panel для обновления заголовка
         self.left_panel = left_panel
         
+        
+        # Панель поиска и фильтрации
+        search_panel = tk.Frame(left_panel, bg=self.colors['bg_card'])
+        search_panel.pack(fill=tk.X, pady=(0, 6))
+        search_panel.columnconfigure(1, weight=1)
+        
+        search_label = tk.Label(
+            search_panel, 
+            text="Поиск:", 
+            bg=self.colors['bg_card'], 
+            fg=self.colors['text_primary'],
+            font=('Robot', 9)
+        )
+        search_label.grid(row=0, column=0, padx=(0, 5), sticky="w")
+        
+        self.search_entry = tk.Entry(
+            search_panel,
+            font=('Robot', 9),
+            bg=self.colors['bg_input'],
+            fg=self.colors['text_primary'],
+            insertbackground=self.colors['text_primary']
+        )
+        self.search_entry.grid(row=0, column=1, sticky="ew", padx=(0, 5))
+        self.search_entry.bind('<KeyRelease>', self.on_search_change)
+        
+        # Кнопка очистки поиска
+        btn_clear_search = tk.Button(
+            search_panel,
+            text="✕",
+            command=self.clear_search,
+            font=('Robot', 8),
+            bg=self.colors['bg_card'],
+            fg=self.colors['text_secondary'],
+            relief=tk.FLAT,
+            cursor='hand2',
+            width=3
+        )
+        btn_clear_search.grid(row=0, column=2, padx=(0, 5))
+        
+        # Чекбокс для regex
+        self.search_regex_var = tk.BooleanVar(value=False)
+        regex_check = tk.Checkbutton(
+            search_panel,
+            text="Regex",
+            variable=self.search_regex_var,
+            command=self.on_search_change,
+            font=('Robot', 8),
+            bg=self.colors['bg_card'],
+            fg=self.colors['text_primary'],
+            selectcolor=self.colors['bg_card'],
+            activebackground=self.colors['bg_card'],
+            activeforeground=self.colors['text_primary']
+        )
+        regex_check.grid(row=0, column=3, padx=(0, 0))
         
         # Панель управления файлами
         control_panel = tk.Frame(left_panel, bg=self.colors['bg_card'])
@@ -494,6 +766,26 @@ class FileRenamerApp:
             font=('Robot', 9, 'bold'), padx=10, pady=6,
             active_bg=self.colors['danger_hover'])
         btn_clear.grid(row=0, column=2, padx=(0, 4), sticky="ew")
+        
+        # Кнопки экспорта/импорта
+        import_export_frame = tk.Frame(left_panel, bg=self.colors['bg_card'])
+        import_export_frame.pack(fill=tk.X, pady=(0, 6))
+        import_export_frame.columnconfigure(0, weight=1)
+        import_export_frame.columnconfigure(1, weight=1)
+        
+        btn_export = self.create_rounded_button(
+            import_export_frame, "Экспорт списка", self.export_files_list,
+            self.colors['primary'], 'white',
+            font=('Robot', 8, 'bold'), padx=8, pady=5,
+            active_bg=self.colors['primary_hover'])
+        btn_export.grid(row=0, column=0, padx=(0, 4), sticky="ew")
+        
+        btn_import = self.create_rounded_button(
+            import_export_frame, "Импорт списка", self.import_files_list,
+            self.colors['primary'], 'white',
+            font=('Robot', 8, 'bold'), padx=8, pady=5,
+            active_bg=self.colors['primary_hover'])
+        btn_import.grid(row=0, column=1, padx=(0, 4), sticky="ew")
         
         # Таблица файлов
         list_frame = ttk.Frame(left_panel)
@@ -530,6 +822,16 @@ class FileRenamerApp:
         self.tree.tag_configure('error', background='#FEE2E2', foreground='#991B1B')
         # Светло-желтый для конфликтов
         self.tree.tag_configure('conflict', background='#FEF3C7', foreground='#92400E')
+        # Подсветка измененных имен
+        self.tree.tag_configure('changed', foreground='#1E40AF')
+        
+        # Восстановление состояния сортировки
+        if hasattr(self, 'settings_manager'):
+            saved_sort = self.settings_manager.get('sort_column')
+            saved_reverse = self.settings_manager.get('sort_reverse', False)
+            if saved_sort:
+                self.sort_column_name = saved_sort
+                self.sort_reverse = saved_reverse
         
         # Настройка колонок с адаптивными размерами (процент от ширины)
         # Используем минимальные ширины, которые будут обновлены при изменении размера
@@ -584,7 +886,12 @@ class FileRenamerApp:
         self.tree.bind('<<TreeviewSelect>>', on_tree_event)
         self.tree.bind('<Configure>', on_tree_event)
         
+        # Контекстное меню для таблицы файлов
+        self.tree.bind('<Button-3>', self.show_file_context_menu)
+        
         # Привязка сортировки
+        self.sort_column_name = None
+        self.sort_reverse = False
         for col in ("old_name", "new_name", "extension", "path", "status"):
             self.tree.heading(col, command=lambda c=col: self.sort_column(c))
         
@@ -728,30 +1035,7 @@ class FileRenamerApp:
         font = ('Robot', 9, 'bold')
         padx = 6  # Компактные отступы
         
-        # Кнопки шаблонов (показываются только для метода "Новое имя")
-        self.template_buttons_frame = tk.Frame(method_buttons_frame, bg=self.colors['bg_card'])
-        self.template_buttons_frame.pack(fill=tk.X, pady=(0, 6))
-        
-        self.btn_quick = self.create_rounded_button(
-            self.template_buttons_frame, "Быстрые шаблоны", self.show_quick_templates,
-            self.colors['primary'], 'white',
-            font=font, padx=padx, pady=6,
-            active_bg=self.colors['primary_hover'], expand=True)
-        self.btn_quick.pack(fill=tk.X, pady=(0, 4))
-        
-        self.btn_save_template = self.create_rounded_button(
-            self.template_buttons_frame, "Сохранить шаблон", self.save_current_template,
-            '#10B981', 'white',
-            font=font, padx=padx, pady=6,
-            active_bg='#059669', expand=True)
-        self.btn_save_template.pack(fill=tk.X, pady=(0, 4))
-        
-        self.btn_saved = self.create_rounded_button(
-            self.template_buttons_frame, "Сохраненные шаблоны", self.show_saved_templates,
-            self.colors['primary'], 'white',
-            font=font, padx=padx, pady=6,
-            active_bg=self.colors['primary_hover'], expand=True)
-        self.btn_saved.pack(fill=tk.X)
+        # Кнопки шаблонов будут созданы в create_new_name_settings под полем ввода
         
         # Кнопка "Начать переименование" внизу на всю ширину
         btn_start_rename = self.create_rounded_button(
@@ -855,6 +1139,26 @@ class FileRenamerApp:
         
         self.progress_window = ttk.Progressbar(progress_container, mode='determinate')
         self.progress_window.pack(fill=tk.X)
+        
+        # Информация о текущем файле
+        self.current_file_label = tk.Label(
+            progress_container,
+            text="Ожидание...",
+            font=('Robot', 8),
+            bg=self.colors['bg_card'],
+            fg=self.colors['text_secondary'],
+            anchor=tk.W
+        )
+        self.current_file_label.pack(anchor=tk.W, pady=(4, 0))
+        
+        # Кнопка отмены
+        self.cancel_rename_var = tk.BooleanVar(value=False)
+        btn_cancel = self.create_rounded_button(
+            progress_container, "Отменить", lambda: self.cancel_rename_var.set(True),
+            self.colors['danger'], 'white',
+            font=('Robot', 8, 'bold'), padx=8, pady=4,
+            active_bg=self.colors['danger_hover'])
+        btn_cancel.pack(anchor=tk.E, pady=(4, 0))
         
         # Обработчик закрытия окна - делаем окно статичным (сворачиваем вместо закрытия)
         def on_close_actions_window():
@@ -1039,9 +1343,12 @@ class FileRenamerApp:
         def update_methods_settings_scrollbar(*args):
             self.update_scrollbar_visibility(settings_canvas, settings_scrollbar, 'vertical')
         
-        self.methods_window_settings_frame.bind('<Configure>', lambda e: window.after_idle(update_methods_settings_scrollbar))
-        settings_canvas.bind('<Configure>', lambda e: window.after_idle(update_methods_settings_scrollbar))
-        window.bind('<Configure>', lambda e: window.after_idle(update_methods_settings_scrollbar))
+        def on_configure(e):
+            window.after_idle(update_methods_settings_scrollbar)
+        
+        self.methods_window_settings_frame.bind('<Configure>', on_configure)
+        settings_canvas.bind('<Configure>', on_configure)
+        window.bind('<Configure>', on_configure)
         
         self._on_method_type_selected_in_window()
         
@@ -1127,12 +1434,6 @@ class FileRenamerApp:
     
     def _create_new_name_settings(self):
         """Настройки для метода Новое имя"""
-        btn = self.create_rounded_button(
-            self.methods_window_settings_frame, "Быстрые шаблоны", 
-            self.show_quick_templates, self.colors['primary'], 'white',
-            font=('Robot', 8), padx=8, pady=4, active_bg=self.colors['primary_hover'])
-        btn.pack(fill=tk.X, pady=(0, 8))
-        
         tk.Label(self.methods_window_settings_frame, text="Шаблон:", 
                 font=('Robot', 9), bg=self.colors['bg_card'], 
                 fg=self.colors['text_primary']).pack(anchor=tk.W, pady=(0, 4))
@@ -1674,21 +1975,35 @@ class FileRenamerApp:
         desc_label.pack(anchor=tk.NW, fill=tk.X)
         
         # Разработчики - карточка
-        dev_card = ttk.LabelFrame(content_frame, text="👥 Разработчики", 
+        dev_card = ttk.LabelFrame(content_frame, text="Разработчики", 
                                   style='Card.TLabelframe', padding=20)
         dev_card.pack(fill=tk.X, pady=(0, 20))
         
         # Разработчики
-        dev_text = "Разработчики: Urban SOLUTION"
+        def open_vk_group(event):
+            import webbrowser
+            webbrowser.open("https://vk.com/urban_solution")
         
-        dev_label = tk.Label(dev_card, 
-                            text=dev_text,
+        dev_frame = tk.Frame(dev_card, bg=self.colors['bg_card'])
+        dev_frame.pack(anchor=tk.W, fill=tk.X, pady=(0, 8))
+        
+        dev_prefix = tk.Label(dev_frame, 
+                            text="Разработчики: ",
                             font=('Robot', 10),
                             bg=self.colors['bg_card'], 
                             fg=self.colors['text_primary'],
-                            justify=tk.LEFT,
-                            anchor=tk.W)
-        dev_label.pack(anchor=tk.W, fill=tk.X, pady=(0, 8))
+                            justify=tk.LEFT)
+        dev_prefix.pack(side=tk.LEFT)
+        
+        dev_name = tk.Label(dev_frame, 
+                           text="Urban SOLUTION",
+                           font=('Robot', 10),
+                           bg=self.colors['bg_card'], 
+                           fg=self.colors['primary'],
+                           cursor='hand2',
+                           justify=tk.LEFT)
+        dev_name.pack(side=tk.LEFT)
+        dev_name.bind("<Button-1>", open_vk_group)
         
         # Разработал
         def open_vk_profile(event):
@@ -1699,25 +2014,12 @@ class FileRenamerApp:
         dev_by_frame.pack(anchor=tk.W, fill=tk.X)
         
         dev_by_prefix = tk.Label(dev_by_frame, 
-                                text="Автора идеи: ",
+                                text="Автор идеи: ",
                                 font=('Robot', 10),
                                 bg=self.colors['bg_card'], 
                                 fg=self.colors['text_primary'],
                                 justify=tk.LEFT)
         dev_by_prefix.pack(side=tk.LEFT)
-        
-        # Иконка VK рядом с именем
-        try:
-            vk_icon_path = os.path.join(os.path.dirname(__file__), "materials", "icon", "ВКонтакте.png")
-            if os.path.exists(vk_icon_path) and HAS_PIL:
-                vk_img = Image.open(vk_icon_path)
-                vk_img = vk_img.resize((16, 16), Image.Resampling.LANCZOS)
-                vk_photo = ImageTk.PhotoImage(vk_img)
-                vk_icon_label = tk.Label(dev_by_frame, image=vk_photo, bg=self.colors['bg_card'])
-                vk_icon_label.image = vk_photo
-                vk_icon_label.pack(side=tk.LEFT, padx=(0, 4))
-        except Exception as e:
-            print(f"Ошибка загрузки иконки VK: {e}")
         
         dev_name_label = tk.Label(dev_by_frame, 
                                  text="Олюшин Владислав Викторович",
@@ -1730,7 +2032,7 @@ class FileRenamerApp:
         dev_name_label.bind("<Button-1>", open_vk_profile)
         
         # Наши соц сети - карточка
-        social_card = ttk.LabelFrame(content_frame, text="🌐 Наши соц сети", 
+        social_card = ttk.LabelFrame(content_frame, text="Социальные сети", 
                                      style='Card.TLabelframe', padding=20)
         social_card.pack(fill=tk.X, pady=(0, 20))
         
@@ -1795,7 +2097,7 @@ class FileRenamerApp:
         tg_label.bind("<Button-1>", open_tg_channel)
         
         # GitHub - отдельная карточка
-        github_card = ttk.LabelFrame(content_frame, text="💻 Посмотреть код", 
+        github_card = ttk.LabelFrame(content_frame, text="Посмотреть код", 
                                      style='Card.TLabelframe', padding=20)
         github_card.pack(fill=tk.X, pady=(0, 20))
         
@@ -1830,7 +2132,7 @@ class FileRenamerApp:
         github_label.bind("<Button-1>", open_github)
         
         # Контакты разработчиков - карточка
-        contact_card = ttk.LabelFrame(content_frame, text="📧 Связаться с разработчиками", 
+        contact_card = ttk.LabelFrame(content_frame, text="Связаться с разработчиками", 
                                       style='Card.TLabelframe', padding=20)
         contact_card.pack(fill=tk.X, pady=(0, 20))
         
@@ -2151,6 +2453,108 @@ class FileRenamerApp:
             font=('Robot', 9, 'bold'), padx=10, pady=6,
             active_bg=self.colors['primary_hover'])
         save_btn.pack(pady=(10, 0))
+        
+        # Переключатель темы
+        if HAS_THEME:
+            theme_frame = tk.Frame(scrollable_frame, bg=self.colors['bg_card'])
+            theme_frame.pack(fill=tk.X, padx=20, pady=(20, 10))
+            
+            theme_label = tk.Label(
+                theme_frame,
+                text="Тема интерфейса:",
+                font=('Robot', 10, 'bold'),
+                bg=self.colors['bg_card'],
+                fg=self.colors['text_primary']
+            )
+            theme_label.pack(anchor=tk.W, pady=(0, 5))
+            
+            theme_var = tk.StringVar(value=self.settings_manager.get('theme', 'light'))
+            
+            def on_theme_change():
+                theme = theme_var.get()
+                if hasattr(self, 'theme_manager'):
+                    self.theme_manager.set_theme(theme)
+                    self.colors = self.theme_manager.colors
+                    self.settings_manager.set('theme', theme)
+                    self.settings_manager.save_settings()
+                    messagebox.showinfo(
+                        "Тема изменена",
+                        "Тема изменена. Перезапустите приложение для применения изменений."
+                    )
+            
+            light_radio = tk.Radiobutton(
+                theme_frame,
+                text="Светлая",
+                variable=theme_var,
+                value='light',
+                command=on_theme_change,
+                font=('Robot', 9),
+                bg=self.colors['bg_card'],
+                fg=self.colors['text_primary'],
+                selectcolor=self.colors['bg_card'],
+                activebackground=self.colors['bg_card'],
+                activeforeground=self.colors['text_primary']
+            )
+            light_radio.pack(anchor=tk.W, pady=2)
+            
+            dark_radio = tk.Radiobutton(
+                theme_frame,
+                text="Темная",
+                variable=theme_var,
+                value='dark',
+                command=on_theme_change,
+                font=('Robot', 9),
+                bg=self.colors['bg_card'],
+                fg=self.colors['text_primary'],
+                selectcolor=self.colors['bg_card'],
+                activebackground=self.colors['bg_card'],
+                activeforeground=self.colors['text_primary']
+            )
+            dark_radio.pack(anchor=tk.W, pady=2)
+        
+        # Настройка резервного копирования
+        if HAS_BACKUP_MANAGER:
+            backup_frame = tk.Frame(scrollable_frame, bg=self.colors['bg_card'])
+            backup_frame.pack(fill=tk.X, padx=20, pady=(20, 10))
+            
+            backup_label = tk.Label(
+                backup_frame,
+                text="Резервное копирование:",
+                font=('Robot', 10, 'bold'),
+                bg=self.colors['bg_card'],
+                fg=self.colors['text_primary']
+            )
+            backup_label.pack(anchor=tk.W, pady=(0, 5))
+            
+            backup_var = tk.BooleanVar(value=self.settings_manager.get('backup', False))
+            
+            def on_backup_change():
+                backup_enabled = backup_var.get()
+                self.settings_manager.set('backup', backup_enabled)
+                self.settings_manager.save_settings()
+                if backup_enabled and not self.backup_manager:
+                    try:
+                        self.backup_manager = BackupManager()
+                        messagebox.showinfo("Резервное копирование", "Резервное копирование включено")
+                    except Exception as e:
+                        messagebox.showerror("Ошибка", f"Не удалось включить резервное копирование: {e}")
+                        backup_var.set(False)
+                elif not backup_enabled:
+                    self.backup_manager = None
+            
+            backup_check = tk.Checkbutton(
+                backup_frame,
+                text="Создавать резервные копии перед переименованием",
+                variable=backup_var,
+                command=on_backup_change,
+                font=('Robot', 9),
+                bg=self.colors['bg_card'],
+                fg=self.colors['text_primary'],
+                selectcolor=self.colors['bg_card'],
+                activebackground=self.colors['bg_card'],
+                activeforeground=self.colors['text_primary']
+            )
+            backup_check.pack(anchor=tk.W, pady=2)
     
     def _create_about_tab(self, notebook):
         """Создание вкладки о программе"""
@@ -2290,7 +2694,7 @@ class FileRenamerApp:
         tech_label.pack(anchor=tk.W, fill=tk.X)
         
         # Контакты разработчиков - карточка
-        contact_card = ttk.LabelFrame(content_frame, text="📧 Связаться с разработчиками", 
+        contact_card = ttk.LabelFrame(content_frame, text="Связаться с разработчиками", 
                                       style='Card.TLabelframe', padding=20)
         contact_card.pack(fill=tk.X, pady=(0, 20))
         
@@ -2408,10 +2812,36 @@ class FileRenamerApp:
     
     def setup_hotkeys(self):
         """Настройка горячих клавиш"""
-        self.root.bind('<Control-a>', lambda e: self.add_files())
+        self.root.bind('<Control-Shift-A>', lambda e: self.add_files())  # Изменено на Ctrl+Shift+A
         self.root.bind('<Control-z>', lambda e: self.undo_rename())
+        self.root.bind('<Control-y>', lambda e: self.redo_rename())
+        self.root.bind('<Control-Shift-Z>', lambda e: self.redo_rename())
         self.root.bind('<Delete>', lambda e: self.delete_selected())
         self.root.bind('<Control-o>', lambda e: self.add_folder())
+        self.root.bind('<Control-s>', lambda e: self.save_template_quick())
+        self.root.bind('<Control-f>', lambda e: self.focus_search())
+        self.root.bind('<F5>', lambda e: self.refresh_treeview())
+        self.root.bind('<Control-r>', lambda e: self.apply_methods())
+    
+    def save_template_quick(self):
+        """Быстрое сохранение шаблона (Ctrl+S)"""
+        self.save_current_template()
+    
+    def focus_search(self):
+        """Фокус на поле поиска (Ctrl+F)"""
+        if hasattr(self, 'search_entry'):
+            self.search_entry.focus()
+            self.search_entry.select_range(0, tk.END)
+    
+    def on_search_change(self, event=None):
+        """Обработка изменения текста поиска"""
+        self.refresh_treeview()
+    
+    def clear_search(self):
+        """Очистка поля поиска"""
+        if hasattr(self, 'search_entry'):
+            self.search_entry.delete(0, tk.END)
+            self.refresh_treeview()
     
     def setup_tray_icon(self):
         """Настройка трей-иконки"""
@@ -2702,6 +3132,9 @@ class FileRenamerApp:
         self.tree.bind('<Button-1>', self.on_treeview_button_press, add='+')
         self.tree.bind('<B1-Motion>', self.on_treeview_drag_motion, add='+')
         self.tree.bind('<ButtonRelease-1>', self.on_treeview_drag_release, add='+')
+        
+        # Контекстное меню для таблицы файлов
+        self.tree.bind('<Button-3>', self.show_file_context_menu)
     
     def on_treeview_button_press(self, event):
         """Начало нажатия кнопки мыши (определяем начало перетаскивания)"""
@@ -2765,7 +3198,8 @@ class FileRenamerApp:
                             self.tree.selection_set(children[target_idx])
                             self.tree.see(children[target_idx])  # Прокручиваем к элементу
                         
-                        self.log(f"Файл '{file_data['old_name']}' перемещен с позиции {start_idx + 1} на {target_idx + 1}")
+                        old_name = file_data.get('old_name', 'unknown')
+                        self.log(f"Файл '{old_name}' перемещен с позиции {start_idx + 1} на {target_idx + 1}")
                 except Exception as e:
                     self.log(f"Ошибка при перемещении файла: {e}")
         
@@ -2781,8 +3215,51 @@ class FileRenamerApp:
         for item in self.tree.get_children():
             self.tree.delete(item)
         
+        # Получаем текст поиска
+        search_text = ""
+        use_regex = False
+        if hasattr(self, 'search_entry'):
+            search_text = self.search_entry.get().strip()
+            if hasattr(self, 'search_regex_var'):
+                use_regex = self.search_regex_var.get()
+        
+        # Компилируем regex паттерн, если включен regex
+        search_pattern = None
+        if search_text and use_regex:
+            try:
+                search_pattern = re.compile(search_text, re.IGNORECASE)
+            except re.error:
+                # Если regex невалидный, используем обычный поиск
+                use_regex = False
+        
         # Добавляем элементы в правильном порядке
         for file_data in self.files:
+            # Фильтрация по поисковому запросу
+            if search_text:
+                if use_regex and search_pattern:
+                    # Поиск по regex
+                    old_name = file_data.get('old_name', '')
+                    new_name = file_data.get('new_name', '')
+                    path = file_data.get('path', '')
+                    extension = file_data.get('extension', '')
+                    full_text = f"{old_name} {new_name} {path} {extension}"
+                    
+                    if not search_pattern.search(full_text):
+                        continue
+                else:
+                    # Обычный поиск
+                    search_lower = search_text.lower()
+                    old_name = file_data.get('old_name', '').lower()
+                    new_name = file_data.get('new_name', '').lower()
+                    path = file_data.get('path', '').lower()
+                    extension = file_data.get('extension', '').lower()
+                    
+                    if (search_lower not in old_name and 
+                        search_lower not in new_name and 
+                        search_lower not in path and 
+                        search_lower not in extension):
+                        continue
+            
             status = file_data.get('status', 'Готов')
             tags = ()
             if status == "Готов":
@@ -2792,11 +3269,26 @@ class FileRenamerApp:
             elif "Конфликт" in status:
                 tags = ('conflict',)
             
+            # Подсветка изменений
+            old_name = file_data.get('old_name', '')
+            new_name = file_data.get('new_name', '')
+            extension = file_data.get('extension', '')
+            
+            # Определяем, изменилось ли имя
+            if old_name != new_name:
+                # Имя изменилось - добавляем специальный тег
+                if 'ready' in tags:
+                    tags = ('ready', 'changed')
+                elif 'error' in tags:
+                    tags = ('error', 'changed')
+                elif 'conflict' in tags:
+                    tags = ('conflict', 'changed')
+            
             self.tree.insert("", tk.END, values=(
-                file_data['old_name'],
-                file_data['new_name'],
-                file_data['extension'],
-                file_data['path'],
+                old_name,
+                new_name,
+                extension,
+                file_data.get('path', ''),
                 status
             ), tags=tags)
         
@@ -2853,7 +3345,11 @@ class FileRenamerApp:
         
         # Проверяем, нет ли уже такого файла в списке
         for existing_file in self.files:
-            existing_path = os.path.normpath(os.path.abspath(existing_file.get('full_path', '')))
+            existing_path = existing_file.get('full_path') or existing_file.get('path', '')
+            if existing_path:
+                existing_path = os.path.normpath(os.path.abspath(existing_path))
+            else:
+                continue
             if existing_path == file_path:
                 # Файл уже есть в списке, пропускаем
                 return
@@ -2888,19 +3384,294 @@ class FileRenamerApp:
         """Удаление выбранных файлов из списка"""
         selected = self.tree.selection()
         if selected:
-            for item in selected:
-                index = self.tree.index(item)
-                self.tree.delete(item)
+            # Сортируем индексы в обратном порядке для корректного удаления
+            indices = sorted([self.tree.index(item) for item in selected], reverse=True)
+            for index in indices:
                 if index < len(self.files):
                     self.files.pop(index)
+                # Удаляем из дерева
+                children = list(self.tree.get_children())
+                if index < len(children):
+                    self.tree.delete(children[index])
+            self.refresh_treeview()
             self.update_status()
             self.log(f"Удалено файлов из списка: {len(selected)}")
+    
+    def select_all(self):
+        """Выделение всех файлов"""
+        for item in self.tree.get_children():
+            self.tree.selection_add(item)
+    
+    def deselect_all(self):
+        """Снятие выделения со всех файлов"""
+        self.tree.selection_set(())
+    
+    def apply_to_selected(self):
+        """Применение методов только к выбранным файлам"""
+        selected = self.tree.selection()
+        if not selected:
+            messagebox.showwarning("Предупреждение", "Выберите файлы для применения методов")
+            return
+        
+        # Получаем индексы выбранных файлов
+        selected_indices = [self.tree.index(item) for item in selected]
+        selected_files = [self.files[i] for i in selected_indices if i < len(self.files)]
+        
+        if not selected_files:
+            return
+        
+        # Применяем методы только к выбранным файлам
+        for file_data in selected_files:
+            try:
+                new_name, extension = self.methods_manager.apply_methods(
+                    file_data.get('old_name', ''),
+                    file_data.get('extension', ''),
+                    file_data.get('full_path') or file_data.get('path', '')
+                )
+                file_data['new_name'] = new_name
+                file_data['extension'] = extension
+                
+                # Валидация
+                file_path = file_data.get('path') or file_data.get('full_path', '')
+                status = validate_filename(new_name, extension, file_path, 0)
+                file_data['status'] = status
+            except Exception as e:
+                file_data['status'] = f"Ошибка: {str(e)}"
+                logger.error(f"Ошибка применения методов к файлу: {e}", exc_info=True)
+        
+        # Проверка конфликтов
+        check_conflicts(selected_files)
+        self.refresh_treeview()
+        self.log(f"Методы применены к {len(selected_files)} выбранным файлам")
+    
+    def show_file_context_menu(self, event):
+        """Показ контекстного меню для файла"""
+        item = self.tree.identify_row(event.y)
+        if not item:
+            return
+        
+        # Выделяем элемент, если он не выделен
+        if item not in self.tree.selection():
+            self.tree.selection_set(item)
+        
+        # Создаем контекстное меню
+        context_menu = tk.Menu(self.root, tearoff=0, 
+                              bg=self.colors.get('bg_card', '#ffffff'),
+                              fg=self.colors.get('text_primary', '#000000'),
+                              activebackground=self.colors.get('primary', '#4a90e2'),
+                              activeforeground='white')
+        
+        context_menu.add_command(label="Удалить из списка", command=self.delete_selected)
+        context_menu.add_separator()
+        context_menu.add_command(label="Открыть папку", command=self.open_file_folder)
+        context_menu.add_command(label="Переименовать вручную", command=self.rename_file_manually)
+        context_menu.add_separator()
+        context_menu.add_command(label="Копировать путь", command=self.copy_file_path)
+        
+        try:
+            context_menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            context_menu.grab_release()
+    
+    def open_file_folder(self):
+        """Открытие папки с выбранным файлом"""
+        selected = self.tree.selection()
+        if not selected:
+            return
+        
+        try:
+            import subprocess
+            import platform
+            
+            item = selected[0]
+            index = self.tree.index(item)
+            if index < len(self.files):
+                file_data = self.files[index]
+                file_path = file_data.get('full_path') or file_data.get('path', '')
+                if file_path:
+                    folder_path = os.path.dirname(file_path)
+                    if platform.system() == 'Windows':
+                        subprocess.Popen(f'explorer "{folder_path}"')
+                    elif platform.system() == 'Darwin':
+                        subprocess.Popen(['open', folder_path])
+                    else:
+                        subprocess.Popen(['xdg-open', folder_path])
+        except Exception as e:
+            messagebox.showerror("Ошибка", f"Не удалось открыть папку:\n{str(e)}")
+            logger.error(f"Ошибка открытия папки: {e}", exc_info=True)
+    
+    def rename_file_manually(self):
+        """Ручное переименование выбранного файла"""
+        selected = self.tree.selection()
+        if not selected:
+            return
+        
+        item = selected[0]
+        index = self.tree.index(item)
+        if index >= len(self.files):
+            return
+        
+        file_data = self.files[index]
+        old_name = file_data.get('old_name', '')
+        extension = file_data.get('extension', '')
+        
+        new_name = simpledialog.askstring(
+            "Переименовать файл",
+            f"Введите новое имя для файла:",
+            initialvalue=old_name
+        )
+        
+        if new_name and new_name.strip():
+            new_name = new_name.strip()
+            file_data['new_name'] = new_name
+            file_data['extension'] = extension
+            self.refresh_treeview()
+            self.log(f"Имя файла изменено вручную: {old_name} -> {new_name}")
+    
+    def copy_file_path(self):
+        """Копирование пути файла в буфер обмена"""
+        selected = self.tree.selection()
+        if not selected:
+            return
+        
+        try:
+            item = selected[0]
+            index = self.tree.index(item)
+            if index < len(self.files):
+                file_data = self.files[index]
+                file_path = file_data.get('full_path') or file_data.get('path', '')
+                if file_path:
+                    self.root.clipboard_clear()
+                    self.root.clipboard_append(file_path)
+                    self.log(f"Путь скопирован в буфер обмена: {file_path}")
+        except Exception as e:
+            logger.error(f"Ошибка копирования пути: {e}", exc_info=True)
     
     def update_status(self):
         """Обновление статусной строки"""
         count = len(self.files)
         if hasattr(self, 'left_panel'):
             self.left_panel.config(text=f"Список файлов (Файлов: {count})")
+    
+    def export_files_list(self):
+        """Экспорт списка файлов в файл"""
+        if not self.files:
+            messagebox.showwarning("Предупреждение", "Список файлов пуст")
+            return
+        
+        filename = filedialog.asksaveasfilename(
+            defaultextension=".json",
+            filetypes=[
+                ("JSON файлы", "*.json"),
+                ("CSV файлы", "*.csv"),
+                ("Все файлы", "*.*")
+            ],
+            title="Экспорт списка файлов"
+        )
+        
+        if not filename:
+            return
+        
+        try:
+            if filename.endswith('.csv'):
+                # Экспорт в CSV
+                import csv
+                with open(filename, 'w', newline='', encoding='utf-8') as f:
+                    writer = csv.writer(f)
+                    writer.writerow(['Старое имя', 'Новое имя', 'Расширение', 'Путь', 'Статус'])
+                    for file_data in self.files:
+                        writer.writerow([
+                            file_data.get('old_name', ''),
+                            file_data.get('new_name', ''),
+                            file_data.get('extension', ''),
+                            file_data.get('path', ''),
+                            file_data.get('status', 'Готов')
+                        ])
+            else:
+                # Экспорт в JSON
+                import json
+                with open(filename, 'w', encoding='utf-8') as f:
+                    json.dump(self.files, f, ensure_ascii=False, indent=2)
+            
+            messagebox.showinfo("Успех", f"Список файлов экспортирован в:\n{filename}")
+            self.log(f"Список файлов экспортирован: {filename}")
+        except Exception as e:
+            messagebox.showerror("Ошибка", f"Не удалось экспортировать список файлов:\n{str(e)}")
+            logger.error(f"Ошибка экспорта списка файлов: {e}", exc_info=True)
+    
+    def import_files_list(self):
+        """Импорт списка файлов из файла"""
+        filename = filedialog.askopenfilename(
+            filetypes=[
+                ("JSON файлы", "*.json"),
+                ("CSV файлы", "*.csv"),
+                ("Все файлы", "*.*")
+            ],
+            title="Импорт списка файлов"
+        )
+        
+        if not filename:
+            return
+        
+        try:
+            imported_files = []
+            
+            if filename.endswith('.csv'):
+                # Импорт из CSV
+                import csv
+                with open(filename, 'r', encoding='utf-8') as f:
+                    reader = csv.DictReader(f)
+                    for row in reader:
+                        file_path = row.get('Путь', '')
+                        if file_path and os.path.exists(file_path) and os.path.isfile(file_path):
+                            file_data = {
+                                'path': file_path,
+                                'full_path': file_path,
+                                'old_name': row.get('Старое имя', ''),
+                                'new_name': row.get('Новое имя', ''),
+                                'extension': row.get('Расширение', ''),
+                                'status': row.get('Статус', 'Готов')
+                            }
+                            imported_files.append(file_data)
+            else:
+                # Импорт из JSON
+                import json
+                with open(filename, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                    if isinstance(data, list):
+                        for file_data in data:
+                            file_path = file_data.get('path') or file_data.get('full_path', '')
+                            if file_path and os.path.exists(file_path) and os.path.isfile(file_path):
+                                imported_files.append(file_data)
+            
+            if imported_files:
+                # Добавляем файлы в список
+                for file_data in imported_files:
+                    # Проверяем на дубликаты
+                    is_duplicate = False
+                    file_path = file_data.get('full_path') or file_data.get('path', '')
+                    if file_path:
+                        file_path = os.path.normpath(os.path.abspath(file_path))
+                        for existing_file in self.files:
+                            existing_path = existing_file.get('full_path') or existing_file.get('path', '')
+                            if existing_path:
+                                existing_path = os.path.normpath(os.path.abspath(existing_path))
+                                if existing_path == file_path:
+                                    is_duplicate = True
+                                    break
+                    
+                    if not is_duplicate:
+                        self.files.append(file_data)
+                
+                self.refresh_treeview()
+                self.update_status()
+                messagebox.showinfo("Успех", f"Импортировано файлов: {len(imported_files)}")
+                self.log(f"Импортировано файлов: {len(imported_files)}")
+            else:
+                messagebox.showwarning("Предупреждение", "Не найдено валидных файлов для импорта")
+        except Exception as e:
+            messagebox.showerror("Ошибка", f"Не удалось импортировать список файлов:\n{str(e)}")
+            logger.error(f"Ошибка импорта списка файлов: {e}", exc_info=True)
     
     def sort_column(self, col: str):
         """Сортировка по колонке"""
@@ -2918,12 +3689,7 @@ class FileRenamerApp:
         
         method_name = self.method_var.get()
         
-        # Показываем/скрываем кнопки шаблонов в зависимости от метода
-        if hasattr(self, 'template_buttons_frame'):
-            if method_name == "Новое имя":
-                self.template_buttons_frame.pack(fill=tk.X, pady=(0, 6))
-            else:
-                self.template_buttons_frame.pack_forget()
+        # Кнопки шаблонов теперь создаются в create_new_name_settings
         
         if method_name == "Новое имя":
             self.create_new_name_settings()
@@ -2995,107 +3761,16 @@ class FileRenamerApp:
         
         extensions = {}
         for file_data in self.files:
-            ext = file_data['extension'].lower()
+            ext = file_data.get('extension', '').lower()
+            if not ext:
+                continue
             if ext:
                 extensions[ext] = extensions.get(ext, 0) + 1
         
         return extensions
     
-    def get_suggested_templates(self):
-        """Получение рекомендуемых шаблонов на основе типов файлов"""
-        extensions = self.get_file_types()
-        if not extensions:
-            return []
-        
-        # Определяем доминирующий тип
-        main_ext = max(extensions.items(), key=lambda x: x[1])[0]
-        
-        templates = []
-        
-        # Шаблоны для изображений
-        image_exts = ['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.tiff', '.webp', '.heic']
-        if main_ext in image_exts:
-            templates.extend([
-                ("Фото_{n:03d}", "Фото_001, Фото_002, ..."),
-                ("IMG_{n:03d}", "IMG_001, IMG_002, ..."),
-                ("{date_created}_Фото_{n:02d}", "2024-01-01_Фото_01, ..."),
-                ("{width}x{height}_{n}", "1920x1080_1, ..."),
-                ("Photo_{n:04d}", "Photo_0001, Photo_0002, ..."),
-                ("Изображение_{n}", "Изображение_1, Изображение_2, ..."),
-            ])
-        
-        # Шаблоны для документов
-        doc_exts = ['.pdf', '.doc', '.docx', '.txt', '.rtf', '.odt']
-        if main_ext in doc_exts:
-            templates.extend([
-                ("Документ_{n:03d}", "Документ_001, Документ_002, ..."),
-                ("Doc_{n:03d}", "Doc_001, Doc_002, ..."),
-                ("{date_created}_Документ_{n}", "2024-01-01_Документ_1, ..."),
-                ("Файл_{n:02d}", "Файл_01, Файл_02, ..."),
-                ("Document_{n:04d}", "Document_0001, ..."),
-            ])
-        
-        # Шаблоны для видео
-        video_exts = ['.mp4', '.avi', '.mkv', '.mov', '.wmv', '.flv', '.webm']
-        if main_ext in video_exts:
-            templates.extend([
-                ("Видео_{n:03d}", "Видео_001, Видео_002, ..."),
-                ("Video_{n:03d}", "Video_001, Video_002, ..."),
-                ("{date_created}_Видео_{n}", "2024-01-01_Видео_1, ..."),
-                ("Clip_{n:02d}", "Clip_01, Clip_02, ..."),
-                ("Movie_{n:04d}", "Movie_0001, Movie_0002, ..."),
-            ])
-        
-        # Шаблоны для аудио
-        audio_exts = ['.mp3', '.wav', '.flac', '.aac', '.ogg', '.m4a']
-        if main_ext in audio_exts:
-            templates.extend([
-                ("Аудио_{n:03d}", "Аудио_001, Аудио_002, ..."),
-                ("Audio_{n:03d}", "Audio_001, Audio_002, ..."),
-                ("Track_{n:02d}", "Track_01, Track_02, ..."),
-                ("{date_created}_Трек_{n}", "2024-01-01_Трек_1, ..."),
-                ("Song_{n:04d}", "Song_0001, Song_0002, ..."),
-            ])
-        
-        # Шаблоны для архивов
-        archive_exts = ['.zip', '.rar', '.7z', '.tar', '.gz', '.bz2']
-        if main_ext in archive_exts:
-            templates.extend([
-                ("Архив_{n:03d}", "Архив_001, Архив_002, ..."),
-                ("Archive_{n:03d}", "Archive_001, Archive_002, ..."),
-                ("{date_created}_Архив_{n}", "2024-01-01_Архив_1, ..."),
-                ("Backup_{n:02d}", "Backup_01, Backup_02, ..."),
-            ])
-        
-        # Шаблоны для таблиц и данных
-        data_exts = ['.xlsx', '.xls', '.csv', '.json', '.xml']
-        if main_ext in data_exts:
-            templates.extend([
-                ("Данные_{n:03d}", "Данные_001, Данные_002, ..."),
-                ("Data_{n:03d}", "Data_001, Data_002, ..."),
-                ("{date_created}_Данные_{n}", "2024-01-01_Данные_1, ..."),
-                ("Table_{n:02d}", "Table_01, Table_02, ..."),
-            ])
-        
-        # Универсальные шаблоны
-        templates.extend([
-            ("Файл_{n:03d}", "Файл_001, Файл_002, ..."),
-            ("{n:04d}", "0001, 0002, 0003, ..."),
-            ("Новый_{n:03d}", "Новый_001, Новый_002, ..."),
-            ("{date_created}_{n:02d}", "2024-01-01_01, 2024-01-01_02, ..."),
-            ("{date_modified}_{name}", "2024-01-01_старое_имя, ..."),
-            ("{name}_{n:03d}", "старое_имя_001, старое_имя_002, ..."),
-            ("{n:02d}_{name}", "01_старое_имя, 02_старое_имя, ..."),
-        ])
-        
-        return templates
-    
     def create_new_name_settings(self):
         """Создание настроек для метода Новое имя"""
-        # Показываем кнопки шаблонов в общей группе кнопок
-        if hasattr(self, 'template_buttons_frame'):
-            self.template_buttons_frame.pack(fill=tk.X, pady=(0, 6))
-        
         # Поле ввода шаблона
         template_label_frame = tk.Frame(self.settings_frame, bg=self.colors['bg_card'])
         template_label_frame.pack(fill=tk.X, pady=(0, 2))
@@ -3108,6 +3783,30 @@ class FileRenamerApp:
         self.new_name_template = ttk.Entry(self.settings_frame, width=18, font=('Robot', 9))
         self.new_name_template.pack(fill=tk.X, pady=(0, 4))
         
+        # Кнопки шаблонов под полем ввода в одну линию
+        font = ('Robot', 9, 'bold')
+        padx = 6
+        pady = 6
+        
+        self.template_buttons_frame = tk.Frame(self.settings_frame, bg=self.colors['bg_card'])
+        self.template_buttons_frame.pack(fill=tk.X, pady=(0, 6))
+        self.template_buttons_frame.columnconfigure(0, weight=1)
+        self.template_buttons_frame.columnconfigure(1, weight=1)
+        
+        self.btn_save_template = self.create_rounded_button(
+            self.template_buttons_frame, "Сохранить шаблон", self.save_current_template,
+            '#10B981', 'white',
+            font=font, padx=padx, pady=pady,
+            active_bg='#059669', expand=True)
+        self.btn_save_template.grid(row=0, column=0, sticky="ew", padx=(0, 4))
+        
+        self.btn_saved = self.create_rounded_button(
+            self.template_buttons_frame, "Сохраненные шаблоны", self.show_saved_templates,
+            self.colors['primary'], 'white',
+            font=font, padx=padx, pady=pady,
+            active_bg=self.colors['primary_hover'], expand=True)
+        self.btn_saved.grid(row=0, column=1, sticky="ew")
+        
         # Настройка начального номера
         number_frame = tk.Frame(self.settings_frame, bg=self.colors['bg_card'])
         number_frame.pack(fill=tk.X, pady=(0, 4))
@@ -3119,15 +3818,7 @@ class FileRenamerApp:
         
         self.new_name_start_number = ttk.Entry(number_frame, width=10, font=('Robot', 9))
         self.new_name_start_number.insert(0, "1")
-        self.new_name_start_number.pack(side=tk.LEFT, padx=(0, 5))
-        
-        # Подсказка
-        hint_label = tk.Label(number_frame, 
-                             text="(для {n}, {n:02d}, {n:03d} и т.д.)",
-                             font=('Robot', 8),
-                             bg=self.colors['bg_card'], 
-                             fg=self.colors['text_secondary'])
-        hint_label.pack(side=tk.LEFT)
+        self.new_name_start_number.pack(side=tk.LEFT)
         
         # Автоматическое применение при изменении шаблона или начального номера
         # Используем переменную для отслеживания таймера, чтобы избежать множественных вызовов
@@ -3157,10 +3848,13 @@ class FileRenamerApp:
                 self._template_change_timer = self.root.after(150, self._apply_template_delayed)
         
         # Привязка событий
+        def on_focus_out(e):
+            self._apply_template_immediate()
+        
         self.new_name_template.bind('<KeyRelease>', on_template_change)
-        self.new_name_template.bind('<FocusOut>', lambda e: self._apply_template_immediate())
+        self.new_name_template.bind('<FocusOut>', on_focus_out)
         self.new_name_start_number.bind('<KeyRelease>', on_number_change)
-        self.new_name_start_number.bind('<FocusOut>', lambda e: self._apply_template_immediate())
+        self.new_name_start_number.bind('<FocusOut>', on_focus_out)
         
         # Если шаблон уже есть в поле, применяем его сразу
         if hasattr(self, 'new_name_template'):
@@ -3230,7 +3924,10 @@ class FileRenamerApp:
                                cursor="hand2",
                                bg=self.colors['bg_secondary'])
             var_label.pack(side=tk.LEFT)
-            var_label.bind("<Button-1>", lambda e, v=var: self.insert_variable(v))
+            def on_var_click(e, v=var):
+                self.insert_variable(v)
+            
+            var_label.bind("<Button-1>", on_var_click)
             def on_enter(event, label=var_label):
                 label.config(underline=True,
                            fg=self.colors['primary_hover'])
@@ -3265,117 +3962,6 @@ class FileRenamerApp:
             if hasattr(self, 'root') and self.files:
                 # Применяем с небольшой задержкой, чтобы пользователь увидел вставленную переменную
                 self.root.after(100, self._apply_template_immediate)
-    
-    def show_quick_templates(self):
-        """Показать окно с быстрыми шаблонами"""
-        try:
-            templates = self.get_suggested_templates()
-            
-            if not templates:
-                messagebox.showinfo(
-                    "Шаблоны",
-                    "Добавьте файлы для предложения шаблонов"
-                )
-                return
-            
-            # Создание окна выбора шаблона
-            template_window = tk.Toplevel(self.root)
-            template_window.title("Быстрые шаблоны")
-            template_window.geometry("500x400")
-            template_window.transient(self.root)  # Делаем окно модальным относительно главного
-            template_window.grab_set()  # Захватываем фокус
-            
-            # Установка иконки
-            try:
-                set_window_icon(template_window, self._icon_photos)
-            except Exception:
-                pass
-            
-            # Убеждаемся, что окно видимо
-            template_window.update()
-            template_window.deiconify()
-            
-            # Настройка фона окна
-            template_window.configure(bg=self.colors['bg_main'])
-            
-            # Информация о типах файлов
-            extensions = self.get_file_types()
-            ext_info = ", ".join([f"{ext} ({count})" for ext, count in sorted(extensions.items(), key=lambda x: -x[1])[:5]])
-            info_label = tk.Label(template_window, text=f"Типы файлов: {ext_info}", 
-                                 font=('Robot', 9),
-                                 bg=self.colors['bg_main'], 
-                                 fg=self.colors['text_primary'])
-            info_label.pack(pady=5)
-            
-            # Список шаблонов
-            listbox_frame = tk.Frame(template_window, bg=self.colors['bg_main'])
-            listbox_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
-            
-            scrollbar = ttk.Scrollbar(listbox_frame, orient=tk.VERTICAL)
-            scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-            
-            listbox = tk.Listbox(listbox_frame, yscrollcommand=scrollbar.set, 
-                                font=('Robot', 10),
-                                bg='white', fg='black',
-                                selectbackground=self.colors['primary'],
-                                selectforeground='white',
-                                relief=tk.SOLID,
-                                borderwidth=1)
-            scrollbar.config(command=listbox.yview)
-            
-            for template, description in templates:
-                listbox.insert(tk.END, f"{template:30s} → {description}")
-            
-            listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-            
-            # Автоматическое управление видимостью скроллбара
-            def update_template_scrollbar(*args):
-                self.update_scrollbar_visibility(listbox, scrollbar, 'vertical')
-            
-            listbox.bind('<Configure>', lambda e: template_window.after_idle(update_template_scrollbar))
-            template_window.after(100, update_template_scrollbar)
-            
-            # Убеждаемся, что окно видимо
-            template_window.update()
-            template_window.deiconify()  # Показываем окно, если оно было скрыто
-            
-            # Кнопки
-            btn_frame = tk.Frame(template_window, bg=self.colors['bg_main'])
-            btn_frame.pack(fill=tk.X, padx=10, pady=5)
-            
-            def select_template():
-                selection = listbox.curselection()
-                if selection:
-                    selected = listbox.get(selection[0])
-                    template = selected.split("→")[0].strip()
-                    self.new_name_template.delete(0, tk.END)
-                    self.new_name_template.insert(0, template)
-                    template_window.destroy()
-                    self.log(f"Выбран шаблон: {template}")
-                    # Немедленно применяем шаблон
-                    self.apply_template_quick(auto=True)
-            
-            btn_select = self.create_rounded_button(
-                btn_frame, "Выбрать", select_template,
-                self.colors['primary'], 'white',
-                font=('Robot', 9, 'bold'), padx=10, pady=6,
-                active_bg=self.colors['primary_hover'])
-            btn_select.pack(side=tk.LEFT, padx=5, fill=tk.X, expand=True)
-            
-            btn_cancel = self.create_rounded_button(
-                btn_frame, "Отмена", template_window.destroy,
-                '#818CF8', 'white',
-                font=('Robot', 9, 'bold'), padx=10, pady=6,
-                active_bg='#6366F1')
-            btn_cancel.pack(side=tk.LEFT, padx=5, fill=tk.X, expand=True)
-            
-            # Двойной клик для выбора
-            listbox.bind('<Double-Button-1>', lambda e: select_template())
-            
-        except Exception as e:
-            messagebox.showerror("Ошибка", f"Не удалось открыть окно быстрых шаблонов:\n{e}")
-            if hasattr(self, 'log'):
-                self.log(f"Ошибка открытия быстрых шаблонов: {e}")
     
     def save_current_template(self):
         """Сохранение текущего шаблона"""
@@ -3415,15 +4001,94 @@ class FileRenamerApp:
                 self.log(f"Шаблон '{template_name}' сохранен")
                 messagebox.showinfo("Успех", f"Шаблон '{template_name}' успешно сохранен!")
     
+    def load_templates_from_file(self):
+        """Загрузка шаблонов из файла"""
+        try:
+            # Открываем диалог выбора файла
+            file_path = filedialog.askopenfilename(
+                title="Выберите файл с шаблонами",
+                filetypes=[
+                    ("JSON файлы", "*.json"),
+                    ("Все файлы", "*.*")
+                ],
+                defaultextension=".json"
+            )
+            
+            if not file_path:
+                return
+            
+            # Загружаем шаблоны из файла
+            import json
+            with open(file_path, 'r', encoding='utf-8') as f:
+                loaded_templates = json.load(f)
+            
+            if not isinstance(loaded_templates, dict):
+                messagebox.showerror("Ошибка", "Неверный формат файла шаблонов")
+                return
+            
+            if not loaded_templates:
+                messagebox.showwarning("Предупреждение", "Файл не содержит шаблонов")
+                return
+            
+            # Подсчитываем количество шаблонов для добавления
+            new_templates = {}
+            existing_count = 0
+            added_count = 0
+            
+            for template_name, template_data in loaded_templates.items():
+                # Проверяем формат шаблона
+                if isinstance(template_data, dict):
+                    if 'template' not in template_data:
+                        continue
+                elif isinstance(template_data, str):
+                    # Преобразуем старый формат в новый
+                    template_data = {'template': template_data, 'start_number': '1'}
+                else:
+                    continue
+                
+                # Если шаблон с таким именем уже существует, добавляем суффикс
+                original_name = template_name
+                counter = 1
+                while template_name in self.saved_templates:
+                    template_name = f"{original_name} ({counter})"
+                    counter += 1
+                    existing_count += 1
+                
+                new_templates[template_name] = template_data
+                added_count += 1
+            
+            if not new_templates:
+                messagebox.showwarning("Предупреждение", "Не удалось загрузить ни одного шаблона из файла")
+                return
+            
+            # Объединяем с существующими шаблонами
+            self.saved_templates.update(new_templates)
+            
+            # Сохраняем обновленные шаблоны
+            self.templates_manager.templates = self.saved_templates
+            self.save_templates()
+            self.templates_manager.save_templates(self.saved_templates)
+            
+            # Показываем результат
+            message = f"Загружено шаблонов: {added_count}"
+            if existing_count > 0:
+                message += f"\nПереименовано из-за совпадений: {existing_count}"
+            messagebox.showinfo("Успех", message)
+            self.log(f"Загружено {added_count} шаблонов из файла: {file_path}")
+            
+        except json.JSONDecodeError:
+            messagebox.showerror("Ошибка", "Неверный формат JSON файла")
+        except FileNotFoundError:
+            messagebox.showerror("Ошибка", "Файл не найден")
+        except Exception as e:
+            messagebox.showerror("Ошибка", f"Не удалось загрузить шаблоны:\n{e}")
+            self.log(f"Ошибка загрузки шаблонов: {e}")
+    
     def show_saved_templates(self):
         """Показать окно с сохраненными шаблонами"""
         try:
             # Обновляем список шаблонов из менеджера
             self.saved_templates = self.templates_manager.templates
-            
-            if not self.saved_templates:
-                messagebox.showinfo("Информация", "Нет сохраненных шаблонов")
-                return
             
             # Создание окна выбора шаблона
             template_window = tk.Toplevel(self.root)
@@ -3466,16 +4131,21 @@ class FileRenamerApp:
                                 borderwidth=1)
             scrollbar.config(command=listbox.yview)
             
+            # Функция для обновления списка шаблонов
+            def refresh_template_list():
+                listbox.delete(0, tk.END)
+                template_keys = sorted(self.saved_templates.keys())
+                for template_name in template_keys:
+                    template_data = self.saved_templates[template_name]
+                    if isinstance(template_data, dict):
+                        template = template_data.get('template', '')
+                    else:
+                        template = str(template_data)
+                    display_text = f"{template_name} → {template}"
+                    listbox.insert(tk.END, display_text)
+            
             # Заполняем список шаблонов
-            template_keys = sorted(self.saved_templates.keys())
-            for template_name in template_keys:
-                template_data = self.saved_templates[template_name]
-                if isinstance(template_data, dict):
-                    template = template_data.get('template', '')
-                else:
-                    template = str(template_data)
-                display_text = f"{template_name} → {template}"
-                listbox.insert(tk.END, display_text)
+            refresh_template_list()
             
             listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
             
@@ -3483,7 +4153,10 @@ class FileRenamerApp:
             def update_saved_template_scrollbar(*args):
                 self.update_scrollbar_visibility(listbox, scrollbar, 'vertical')
             
-            listbox.bind('<Configure>', lambda e: template_window.after_idle(update_saved_template_scrollbar))
+            def on_template_configure(e):
+                template_window.after_idle(update_saved_template_scrollbar)
+            
+            listbox.bind('<Configure>', on_template_configure)
             template_window.after(100, update_saved_template_scrollbar)
             
             # Убеждаемся, что окно видимо
@@ -3498,6 +4171,7 @@ class FileRenamerApp:
             btn_frame.columnconfigure(2, weight=1)
             btn_frame.columnconfigure(3, weight=1)
             btn_frame.columnconfigure(4, weight=1)
+            btn_frame.columnconfigure(5, weight=1)
             
             def apply_template():
                 selection = listbox.curselection()
@@ -3579,12 +4253,33 @@ class FileRenamerApp:
                 active_bg=self.colors['primary_hover'])
             btn_export.grid(row=0, column=2, sticky="ew", padx=(0, 5))
             
+            def load_templates_and_refresh():
+                """Загрузка шаблонов с обновлением списка в окне"""
+                # Вызываем метод загрузки
+                self.load_templates_from_file()
+                
+                # Обновляем список шаблонов в окне
+                self.saved_templates = self.templates_manager.templates
+                
+                # Обновляем listbox
+                refresh_template_list()
+                
+                # Обновляем скроллбар
+                template_window.after_idle(update_saved_template_scrollbar)
+            
+            btn_load = self.create_rounded_button(
+                btn_frame, "Загрузить", load_templates_and_refresh,
+                '#3B82F6', 'white',
+                font=('Robot', 9, 'bold'), padx=10, pady=6,
+                active_bg='#2563EB')
+            btn_load.grid(row=0, column=3, sticky="ew", padx=(0, 5))
+            
             btn_close = self.create_rounded_button(
                 btn_frame, "Закрыть", template_window.destroy,
                 '#818CF8', 'white',
                 font=('Robot', 9, 'bold'), padx=10, pady=6,
                 active_bg='#6366F1')
-            btn_close.grid(row=0, column=3, sticky="ew")
+            btn_close.grid(row=0, column=4, sticky="ew")
             
             # Двойной клик для применения
             listbox.bind('<Double-Button-1>', lambda e: apply_template())
@@ -3963,21 +4658,31 @@ class FileRenamerApp:
         
         # Применение методов к каждому файлу
         for i, file_data in enumerate(self.files):
-            new_name = file_data['old_name']
-            extension = file_data['extension']
+            # Безопасный доступ к данным файла
+            new_name = file_data.get('old_name', '')
+            extension = file_data.get('extension', '')
+            
+            if not new_name:
+                continue
             
             # Применяем все методы последовательно
+            file_path = file_data.get('full_path') or file_data.get('path', '')
+            if not file_path:
+                continue
+            
             for method in self.methods_manager.get_methods():
                 try:
-                    new_name, extension = method.apply(new_name, extension, file_data['full_path'])
+                    new_name, extension = method.apply(new_name, extension, file_path)
                 except Exception as e:
-                    self.log(f"Ошибка при применении метода к {file_data['old_name']}: {e}")
+                    old_name = file_data.get('old_name', 'unknown')
+                    self.log(f"Ошибка при применении метода к {old_name}: {e}")
             
             file_data['new_name'] = new_name
             file_data['extension'] = extension
             
             # Проверка на валидность имени
-            status = validate_filename(new_name, extension, file_data['path'], i)
+            file_path = file_data.get('path') or file_data.get('full_path', '')
+            status = validate_filename(new_name, extension, file_path, i)
             file_data['status'] = status
             
             # Обновление в таблице
@@ -3986,22 +4691,23 @@ class FileRenamerApp:
                 if i < len(children):
                     item = children[i]
                     self.tree.item(item, values=(
-                        file_data['old_name'],
+                        file_data.get('old_name', ''),
                         new_name,
                         extension,
-                        file_data['path'],
+                        file_data.get('path', ''),
                         status
                     ))
                 else:
                     # Если индекс не совпадает, ищем элемент по старому имени
                     for item in children:
                         item_values = self.tree.item(item, 'values')
-                        if len(item_values) > 0 and item_values[0] == file_data['old_name']:
+                        old_name = file_data.get('old_name', '')
+                        if len(item_values) > 0 and item_values[0] == old_name:
                             self.tree.item(item, values=(
-                                file_data['old_name'],
+                                file_data.get('old_name', ''),
                                 new_name,
                                 extension,
-                                file_data['path'],
+                                file_data.get('path', ''),
                                 status
                             ))
                             break
@@ -4030,7 +4736,7 @@ class FileRenamerApp:
             return
         
         # Подсчет готовых файлов
-        ready_files = [f for f in self.files if f['status'] == 'Готов']
+        ready_files = [f for f in self.files if f.get('status') == 'Готов']
         
         if not ready_files:
             messagebox.showwarning(
@@ -4038,6 +4744,19 @@ class FileRenamerApp:
                 "Нет файлов готовых к переименованию"
             )
             return
+        
+        # Валидация всех файлов перед переименованием
+        is_valid, errors = self.validate_all_files()
+        if not is_valid:
+            error_msg = "Обнаружены ошибки валидации:\n\n" + "\n".join(errors[:10])
+            if len(errors) > 10:
+                error_msg += f"\n... и еще {len(errors) - 10} ошибок"
+            
+            if not messagebox.askyesno(
+                "Ошибки валидации",
+                f"{error_msg}\n\nПродолжить переименование несмотря на ошибки?"
+            ):
+                return
         
         # Подтверждение
         if not messagebox.askyesno("Подтверждение", 
@@ -4047,12 +4766,61 @@ class FileRenamerApp:
         # Сохранение состояния для отмены
         undo_state = [f.copy() for f in self.files]
         self.undo_stack.append(undo_state)
+        # Очищаем redo стек при новой операции
+        self.redo_stack.clear()
+        
+        # Сброс флага отмены
+        if not hasattr(self, 'cancel_rename_var') or not self.cancel_rename_var:
+            self.cancel_rename_var = tk.BooleanVar(value=False)
+        else:
+            self.cancel_rename_var.set(False)
         
         # Запуск переименования в отдельном потоке
+        backup_mgr = None
+        if hasattr(self, 'backup_manager') and self.backup_manager:
+            backup_mgr = self.backup_manager
+        
+        # Создаем событие для отмены
+        cancel_event = threading.Event()
+        
+        # Функция обновления прогресса
+        def update_progress(current, total, filename):
+            if hasattr(self, 'progress_window') and self.progress_window:
+                try:
+                    self.progress_window['value'] = current
+                    self.progress_window['maximum'] = total
+                except (AttributeError, tk.TclError):
+                    pass
+            if hasattr(self, 'current_file_label') and self.current_file_label:
+                try:
+                    self.current_file_label.config(
+                        text=f"Обрабатывается: {filename} ({current}/{total})"
+                    )
+                except (AttributeError, tk.TclError):
+                    pass
+        
+        # Периодическая проверка отмены
+        def check_cancel():
+            if hasattr(self, 'cancel_rename_var') and self.cancel_rename_var:
+                if self.cancel_rename_var.get():
+                    cancel_event.set()
+                    if hasattr(self, 'current_file_label') and self.current_file_label:
+                        try:
+                            self.current_file_label.config(text="Отмена...")
+                        except (AttributeError, tk.TclError):
+                            pass
+                else:
+                    self.root.after(100, check_cancel)
+        
+        check_cancel()
+        
         rename_files_thread(
             ready_files,
             self.rename_complete,
-            self.log
+            self.log,
+            backup_mgr,
+            update_progress,
+            cancel_event
         )
     
     def _rename_files_thread_old(self, files_to_rename: List[Dict]):
@@ -4077,11 +4845,30 @@ class FileRenamerApp:
         
         for i, file_data in enumerate(files_to_rename):
             try:
-                old_path = file_data['full_path']
+                # Безопасный доступ к пути файла
+                old_path = file_data.get('full_path') or file_data.get('path')
+                if not old_path:
+                    error_msg = "Не указан путь к файлу"
+                    file_data['status'] = f"Ошибка: {error_msg}"
+                    error_count += 1
+                    continue
+                
                 # Сохраняем оригинальный путь для последующего удаления из списка
                 file_data['original_full_path'] = old_path
-                new_name = file_data['new_name'] + file_data['extension']
-                new_path = os.path.join(file_data['path'], new_name)
+                
+                # Безопасный доступ к данным файла
+                new_name_part = file_data.get('new_name', '')
+                extension_part = file_data.get('extension', '')
+                file_dir = file_data.get('path') or os.path.dirname(old_path)
+                
+                if not new_name_part or not file_dir:
+                    error_msg = "Недостаточно данных для переименования"
+                    file_data['status'] = f"Ошибка: {error_msg}"
+                    error_count += 1
+                    continue
+                
+                new_name = new_name_part + extension_part
+                new_path = os.path.join(file_dir, new_name)
                 new_path = os.path.normpath(new_path)
                 
                 # Проверка существования исходного файла
@@ -4096,11 +4883,19 @@ class FileRenamerApp:
                     # Также проверяем, что этот путь не занят другим файлом из нашей сессии
                     if os.path.exists(new_path) and new_path not in renamed_paths:
                         # Генерация уникального имени с суффиксом
-                        base_name = file_data['new_name']
-                        extension = file_data['extension']
+                        base_name = file_data.get('new_name', '')
+                        extension = file_data.get('extension', '')
+                        file_dir = file_data.get('path') or os.path.dirname(old_path)
+                        
+                        if not base_name or not file_dir:
+                            error_msg = "Недостаточно данных для генерации уникального имени"
+                            file_data['status'] = f"Ошибка: {error_msg}"
+                            error_count += 1
+                            continue
+                        
                         counter = 1
                         new_path = os.path.join(
-                            file_data['path'],
+                            file_dir,
                             f"{base_name}_{counter}{extension}"
                         )
                         new_path = os.path.normpath(new_path)
@@ -4112,7 +4907,7 @@ class FileRenamerApp:
                                counter < 1000):
                             counter += 1
                             new_path = os.path.join(
-                                file_data['path'],
+                                file_dir,
                                 f"{base_name}_{counter}{extension}"
                             )
                             new_path = os.path.normpath(new_path)
@@ -4121,13 +4916,14 @@ class FileRenamerApp:
                             error_count += 1
                             self.log(
                                 f"Не удалось найти свободное имя для: "
-                                f"{file_data['old_name']}"
+                                f"{file_data.get('old_name', 'unknown')}"
                             )
                             continue
                         
                         # Обновляем имя в данных файла
-                        file_data['new_name'] = f"{base_name}_{counter}"
-                        new_name = file_data['new_name'] + extension
+                        new_name_with_counter = f"{base_name}_{counter}"
+                        file_data['new_name'] = new_name_with_counter
+                        new_name = new_name_with_counter + extension
                         self.log(f"Использовано уникальное имя (конфликт): {new_name}")
                     
                     try:
@@ -4135,7 +4931,7 @@ class FileRenamerApp:
                         # Добавляем переименованный путь в множество
                         renamed_paths.add(new_path)
                         file_data['full_path'] = new_path
-                        file_data['old_name'] = file_data['new_name']
+                        file_data['old_name'] = file_data.get('new_name', '')
                         old_basename = os.path.basename(old_path)
                         new_basename = os.path.basename(new_path)
                         self.log(
@@ -4144,7 +4940,8 @@ class FileRenamerApp:
                         success_count += 1
                     except OSError as e:
                         error_count += 1
-                        self.log(f"Ошибка переименования {file_data['old_name']}: {e}")
+                        old_name = file_data.get('old_name', 'unknown')
+                        self.log(f"Ошибка переименования {old_name}: {e}")
                 else:
                     # Файл не меняется, но добавляем его путь в множество
                     renamed_paths.add(new_path)
@@ -4153,7 +4950,21 @@ class FileRenamerApp:
                 
             except Exception as e:
                 error_count += 1
-                self.log(f"Ошибка при переименовании {file_data.get('old_name', 'unknown')}: {e}")
+                error_msg = str(e)
+                
+                # Улучшенная обработка ошибок
+                if self.error_handler:
+                    try:
+                        error_details = self.error_handler.get_error_details(
+                            e,
+                            {'file': file_data.get('old_name', 'unknown')}
+                        )
+                        error_msg = self.error_handler.format_error_message(error_details)
+                    except Exception:
+                        pass
+                
+                self.log(f"Ошибка при переименовании {file_data.get('old_name', 'unknown')}: {error_msg}")
+                logger.error(f"Ошибка переименования: {e}", exc_info=True)
             
             self.progress['value'] = i + 1
             # Синхронизация прогресс-бара в окне действий, если оно открыто
@@ -4167,12 +4978,22 @@ class FileRenamerApp:
         # Собираем список успешно переименованных файлов
         renamed_files = []
         for file_data in files_to_rename:
-            new_path = os.path.join(
-                file_data['path'],
-                file_data['new_name'] + file_data['extension']
-            )
+            # Безопасный доступ к данным файла
+            file_dir = file_data.get('path') or file_data.get('full_path', '')
+            if file_dir:
+                file_dir = os.path.dirname(file_dir) if os.path.isfile(file_dir) else file_dir
+            
+            new_name = file_data.get('new_name', '')
+            extension = file_data.get('extension', '')
+            
+            if not file_dir or not new_name:
+                continue
+            
+            new_path = os.path.join(file_dir, new_name + extension)
             new_path = os.path.normpath(new_path)
-            old_path = file_data.get('original_full_path', file_data['full_path'])
+            old_path = file_data.get('original_full_path') or file_data.get('full_path') or file_data.get('path')
+            if not old_path:
+                continue
             # Если файл был переименован (пути разные) и новый файл существует
             if old_path != new_path and os.path.exists(new_path):
                 renamed_files.append(file_data)
@@ -4181,7 +5002,54 @@ class FileRenamerApp:
         self.root.after(0, lambda: self.rename_complete(success_count, error_count, renamed_files))
     
     def rename_complete(self, success: int, error: int, renamed_files: list = None):
-        """Завершение переименования"""
+        """Обработка завершения переименования.
+        
+        Args:
+            success: Количество успешных операций
+            error: Количество ошибок
+            renamed_files: Список переименованных файлов
+        """
+        # Добавляем операцию в историю
+        if self.history_manager:
+            try:
+                files_for_history = renamed_files if renamed_files else self.files[:100]
+                self.history_manager.add_operation(
+                    'rename',
+                    files_for_history,
+                    success,
+                    error
+                )
+            except Exception as e:
+                logger.debug(f"Не удалось добавить операцию в историю: {e}")
+        
+        # Записываем в статистику
+        if self.statistics_manager:
+            try:
+                methods_used = [type(m).__name__ for m in self.methods_manager.get_methods()]
+                self.statistics_manager.record_operation(
+                    'rename',
+                    success,
+                    error,
+                    methods_used,
+                    renamed_files if renamed_files else []
+                )
+            except Exception as e:
+                logger.debug(f"Не удалось записать статистику: {e}")
+        
+        # Показываем уведомление
+        if self.notification_manager:
+            try:
+                if success > 0:
+                    self.notification_manager.notify_success(
+                        f"Переименовано файлов: {success}"
+                    )
+                if error > 0:
+                    self.notification_manager.notify_error(
+                        f"Ошибок при переименовании: {error}"
+                    )
+            except Exception as e:
+                logger.debug(f"Не удалось показать уведомление: {e}")
+        
         messagebox.showinfo("Завершено", f"Переименование завершено.\nУспешно: {success}\nОшибок: {error}")
         self.progress['value'] = 0
         # Синхронизация прогресс-бара в окне действий, если оно открыто
@@ -4203,10 +5071,10 @@ class FileRenamerApp:
         
         for file_data in self.files:
             self.tree.insert("", tk.END, values=(
-                file_data['old_name'],
-                file_data['new_name'],
-                file_data['extension'],
-                file_data['path'],
+                        file_data.get('old_name', ''),
+                        file_data.get('new_name', ''),
+                        file_data.get('extension', ''),
+                        file_data.get('path', ''),
                 file_data['status']
             ))
         
@@ -4219,14 +5087,22 @@ class FileRenamerApp:
             messagebox.showinfo("Информация", "Нет операций для отмены")
             return
         
+        # Сохраняем текущее состояние для redo
+        current_state = [f.copy() for f in self.files]
+        self.redo_stack.append(current_state)
+        
         undo_state = self.undo_stack.pop()
         
         # Восстановление файлов
         for i, old_file_data in enumerate(undo_state):
             if i < len(self.files):
                 current_file = self.files[i]
-                old_path = old_file_data['full_path']
-                new_path = current_file['full_path']
+                # Безопасный доступ к путям
+                old_path = old_file_data.get('full_path') or old_file_data.get('path')
+                new_path = current_file.get('full_path') or current_file.get('path')
+                
+                if not old_path or not new_path:
+                    continue
                 
                 if old_path != new_path and os.path.exists(new_path):
                     try:
@@ -4241,19 +5117,47 @@ class FileRenamerApp:
                         self.log(f"Ошибка при отмене: {e}")
         
         # Обновление интерфейса
-        for item in self.tree.get_children():
-            self.tree.delete(item)
-        
-        for file_data in self.files:
-            self.tree.insert("", tk.END, values=(
-                file_data['old_name'],
-                file_data['new_name'],
-                file_data['extension'],
-                file_data['path'],
-                file_data['status']
-            ))
-        
+        self.refresh_treeview()
         messagebox.showinfo("Отменено", "Последняя операция переименования отменена")
+    
+    def redo_rename(self):
+        """Повтор последней отмененной операции"""
+        if not self.redo_stack:
+            messagebox.showinfo("Информация", "Нет операций для повтора")
+            return
+        
+        # Сохраняем текущее состояние для undo
+        current_state = [f.copy() for f in self.files]
+        self.undo_stack.append(current_state)
+        
+        redo_state = self.redo_stack.pop()
+        
+        # Восстановление файлов из redo
+        for i, redo_file_data in enumerate(redo_state):
+            if i < len(self.files):
+                current_file = self.files[i]
+                # Безопасный доступ к путям
+                redo_path = redo_file_data.get('full_path') or redo_file_data.get('path')
+                current_path = current_file.get('full_path') or current_file.get('path')
+                
+                if not redo_path or not current_path:
+                    continue
+                
+                if redo_path != current_path and os.path.exists(current_path):
+                    try:
+                        os.rename(current_path, redo_path)
+                        self.files[i] = redo_file_data.copy()
+                        current_basename = os.path.basename(current_path)
+                        redo_basename = os.path.basename(redo_path)
+                        self.log(
+                            f"Повторено: {current_basename} -> {redo_basename}"
+                        )
+                    except Exception as e:
+                        self.log(f"Ошибка при повторе: {e}")
+        
+        # Обновление интерфейса
+        self.refresh_treeview()
+        messagebox.showinfo("Повторено", "Операция переименования повторена")
 
 
 def main():
