@@ -5,7 +5,7 @@ from typing import Dict, List, Optional
 import tkinter as tk
 from tkinter import messagebox
 
-from .rename_methods import (
+from core.rename_methods import (
     AddRemoveMethod,
     CaseMethod,
     MetadataMethod,
@@ -20,7 +20,7 @@ from .rename_methods import (
 class MethodsManager:
     """Класс для управления методами переименования."""
     
-    def __init__(self, metadata_extractor=None):
+    def __init__(self, metadata_extractor: Optional[object] = None):
         """Инициализация менеджера методов.
         
         Args:
@@ -60,18 +60,22 @@ class MethodsManager:
     
     def reset_counters(self) -> None:
         """Сброс счетчиков нумерации перед применением."""
-        from .rename_methods import NumberingMethod, NewNameMethod
+        from core.rename_methods import NumberingMethod, NewNameMethod
         for method in self.methods:
             if isinstance(method, NumberingMethod):
                 method.reset()
             elif isinstance(method, NewNameMethod):
                 method.reset()
     
-    def create_add_remove_method(self, operation: str, text: str = "", 
-                                 position: str = "before",
-                                 remove_type: Optional[str] = None,
-                                 remove_start: Optional[str] = None,
-                                 remove_end: Optional[str] = None) -> AddRemoveMethod:
+    def create_add_remove_method(
+        self,
+        operation: str,
+        text: str = "",
+        position: str = "before",
+        remove_type: Optional[str] = None,
+        remove_start: Optional[str] = None,
+        remove_end: Optional[str] = None
+    ) -> AddRemoveMethod:
         """Создание метода добавления/удаления текста.
         
         Args:
@@ -87,9 +91,13 @@ class MethodsManager:
         """
         return AddRemoveMethod(operation, text, position, remove_type, remove_start, remove_end)
     
-    def create_replace_method(self, find: str, replace: str, 
-                             case_sensitive: bool = False,
-                             full_match: bool = False) -> ReplaceMethod:
+    def create_replace_method(
+        self,
+        find: str,
+        replace: str,
+        case_sensitive: bool = False,
+        full_match: bool = False
+    ) -> ReplaceMethod:
         """Создание метода замены текста.
         
         Args:
@@ -115,9 +123,14 @@ class MethodsManager:
         """
         return CaseMethod(case_type, apply_to)
     
-    def create_numbering_method(self, start: int = 1, step: int = 1, 
-                               digits: int = 3, format_str: str = "({n})",
-                               position: str = "end") -> NumberingMethod:
+    def create_numbering_method(
+        self,
+        start: int = 1,
+        step: int = 1,
+        digits: int = 3,
+        format_str: str = "({n})",
+        position: str = "end"
+    ) -> NumberingMethod:
         """Создание метода нумерации.
         
         Args:

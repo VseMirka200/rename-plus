@@ -92,7 +92,7 @@ class SettingsManager:
         """
         return self.settings.get(key, default)
     
-    def set(self, key: str, value: Any):
+    def set(self, key: str, value: Any) -> None:
         """Установка значения настройки.
         
         Args:
@@ -171,7 +171,7 @@ class TemplatesManager:
         """
         return self.templates.get(key, default)
     
-    def set(self, key: str, value: Any):
+    def set(self, key: str, value: Any) -> None:
         """Установка шаблона.
         
         Args:

@@ -10,28 +10,59 @@ class UIComponents:
     
     @staticmethod
     def hex_to_rgb(hex_color: str) -> Tuple[int, int, int]:
-        """Конвертация hex в RGB."""
+        """Конвертация hex в RGB.
+        
+        Args:
+            hex_color: Цвет в формате hex (например, "#FF0000")
+            
+        Returns:
+            Кортеж (R, G, B) с значениями от 0 до 255
+        """
         hex_color = hex_color.lstrip('#')
         return tuple(int(hex_color[i:i+2], 16) for i in (0, 2, 4))
     
     @staticmethod
     def create_rounded_button(
-        parent, 
-        text: str, 
-        command: Callable, 
-        bg_color: str, 
+        parent,
+        text: str,
+        command: Callable,
+        bg_color: str,
         fg_color: str = 'white',
-        font: Tuple[str, int, str] = ('Segoe UI', 10, 'bold'), 
-        padx: int = 16, 
+        font: Tuple[str, int, str] = ('Segoe UI', 10, 'bold'),
+        padx: int = 16,
         pady: int = 10,
-        active_bg: Optional[str] = None, 
-        active_fg: str = 'white', 
-        width: Optional[int] = None, 
+        active_bg: Optional[str] = None,
+        active_fg: str = 'white',
+        width: Optional[int] = None,
         expand: bool = True
     ) -> tk.Frame:
-        """Создание кнопки с закругленными углами через Canvas."""
+        """Создание кнопки с закругленными углами через Canvas.
+        
+        Args:
+            parent: Родительский виджет
+            text: Текст кнопки
+            command: Функция-обработчик клика
+            bg_color: Цвет фона
+            fg_color: Цвет текста
+            font: Шрифт (семейство, размер, стиль)
+            padx: Горизонтальный отступ
+            pady: Вертикальный отступ
+            active_bg: Цвет фона при наведении
+            active_fg: Цвет текста при наведении
+            width: Ширина кнопки
+            expand: Растягивать ли кнопку
+            
+        Returns:
+            Фрейм с кнопкой
+        """
         if active_bg is None:
             active_bg = bg_color
+        
+        # Проверка, что command передан
+        if command is None:
+            def empty_command():
+                pass
+            command = empty_command
         
         # Фрейм для кнопки
         btn_frame = tk.Frame(parent, bg=parent.cget('bg'))
@@ -51,7 +82,8 @@ class UIComponents:
             highlightthickness=0, 
             borderwidth=0,
             bg=parent.cget('bg'), 
-            height=canvas_height
+            height=canvas_height,
+            cursor='hand2'
         )
         
         if expand:
@@ -65,6 +97,11 @@ class UIComponents:
         # Сохраняем параметры
         canvas.btn_text = text
         canvas.btn_command = command
+        # Проверяем, что команда передана
+        if command is None:
+            print("Предупреждение: команда кнопки не передана!")
+        elif not callable(command):
+            print(f"Предупреждение: команда кнопки не является вызываемой: {type(command)}")
         canvas.btn_bg = bg_color
         canvas.btn_fg = fg_color
         canvas.btn_active_bg = active_bg
@@ -74,58 +111,53 @@ class UIComponents:
         canvas.btn_width = width
         canvas.btn_expand = expand
         
-        def draw_button(state: str = 'normal'):
-            canvas.delete('all')
-            if canvas.btn_expand:
-                w = canvas.winfo_width()
-            else:
-                w = canvas.btn_width if canvas.btn_width else canvas.winfo_width()
-            h = canvas.winfo_height()
-            
-            if w <= 1 or h <= 1:
-                canvas.after(10, lambda: draw_button(state))
-                return
-            
-            if canvas.btn_expand and w < 50:
-                w = 50
-            
-            radius = 8
-            color = canvas.btn_active_bg if state == 'active' else canvas.btn_bg
-            text_color = canvas.btn_active_fg if state == 'active' else canvas.btn_fg
-            
-            # Конвертируем цвет в hex для Canvas
-            if isinstance(color, tuple):
-                color_hex = f"#{color[0]:02x}{color[1]:02x}{color[2]:02x}"
-            elif color.startswith('#'):
-                color_hex = color
-            else:
-                color_hex = '#6366F1'
-            
-            # Рисуем закругленный прямоугольник
-            canvas.create_arc(0, 0, radius*2, radius*2, start=90, extent=90, 
-                            fill=color_hex, outline=color_hex)
-            canvas.create_arc(w-radius*2, 0, w, radius*2, start=0, extent=90, 
-                            fill=color_hex, outline=color_hex)
-            canvas.create_arc(0, h-radius*2, radius*2, h, start=180, extent=90, 
-                            fill=color_hex, outline=color_hex)
-            canvas.create_arc(w-radius*2, h-radius*2, w, h, start=270, extent=90, 
-                            fill=color_hex, outline=color_hex)
-            canvas.create_rectangle(radius, 0, w-radius, h, fill=color_hex, outline=color_hex)
-            canvas.create_rectangle(0, radius, w, h-radius, fill=color_hex, outline=color_hex)
-            
-            canvas.create_text(w//2, h//2, text=text, 
-                             fill=text_color, font=canvas.btn_font, width=max(w-20, 50))
+        # Флаг для предотвращения бесконечных вызовов
+        canvas._drawing = False
+        canvas._pending_draw = None
+        
+        # Определяем обработчики событий сначала
+        def on_click(e=None):
+            try:
+                # Проверяем, что команда существует и вызываем её
+                if hasattr(canvas, 'btn_command') and canvas.btn_command:
+                    # Вызываем команду без аргументов
+                    if callable(canvas.btn_command):
+                        canvas.btn_command()
+                    else:
+                        # Показываем ошибку пользователю
+                        try:
+                            import tkinter.messagebox as mb
+                            mb.showerror("Ошибка", "Команда кнопки не является вызываемой функцией")
+                        except Exception:
+                            pass
+                else:
+                    # Показываем ошибку пользователю
+                    try:
+                        import tkinter.messagebox as mb
+                        mb.showerror("Ошибка", "Команда кнопки не найдена")
+                    except Exception:
+                        pass
+            except Exception as ex:
+                # Логируем ошибку в файл, так как консоль может быть недоступна
+                import logging
+                logger = logging.getLogger(__name__)
+                logger.error(f"Ошибка при нажатии кнопки: {ex}", exc_info=True)
+                # Также показываем сообщение пользователю
+                try:
+                    import tkinter.messagebox as mb
+                    mb.showerror("Ошибка", f"Ошибка при выполнении команды кнопки:\n{ex}")
+                except Exception:
+                    pass
         
         def on_enter(e):
-            canvas.btn_state = 'active'
-            draw_button('active')
+            if canvas.btn_state != 'active':
+                canvas.btn_state = 'active'
+                draw_button('active')
         
         def on_leave(e):
-            canvas.btn_state = 'normal'
-            draw_button('normal')
-        
-        def on_click(e):
-            canvas.btn_command()
+            if canvas.btn_state != 'normal':
+                canvas.btn_state = 'normal'
+                draw_button('normal')
         
         def on_configure(e):
             if not canvas.btn_expand and canvas.btn_width:
@@ -135,12 +167,93 @@ class UIComponents:
                     btn_frame.config(width=canvas.btn_width)
             draw_button(canvas.btn_state)
         
+        def draw_button(state: str = 'normal'):
+            # Защита от одновременных вызовов
+            if canvas._drawing:
+                return
+            
+            # Отменяем предыдущий отложенный вызов, если есть
+            if canvas._pending_draw:
+                try:
+                    canvas.after_cancel(canvas._pending_draw)
+                except (tk.TclError, ValueError):
+                    pass
+                canvas._pending_draw = None
+            
+            canvas._drawing = True
+            try:
+                canvas.delete('all')
+                if canvas.btn_expand:
+                    w = canvas.winfo_width()
+                else:
+                    w = canvas.btn_width if canvas.btn_width else canvas.winfo_width()
+                h = canvas.winfo_height()
+                
+                if w <= 1 or h <= 1:
+                    # Отложенный вызов с ограничением попыток
+                    canvas._pending_draw = canvas.after(50, lambda: draw_button(state))
+                    return
+                
+                if canvas.btn_expand and w < 50:
+                    w = 50
+                
+                radius = 8
+                color = canvas.btn_active_bg if state == 'active' else canvas.btn_bg
+                text_color = canvas.btn_active_fg if state == 'active' else canvas.btn_fg
+                
+                # Конвертируем цвет в hex для Canvas
+                if isinstance(color, tuple):
+                    color_hex = f"#{color[0]:02x}{color[1]:02x}{color[2]:02x}"
+                elif isinstance(color, str) and color.startswith('#'):
+                    color_hex = color
+                else:
+                    # Если цвет не распознан, используем значение по умолчанию
+                    try:
+                        # Пробуем преобразовать в строку и использовать как есть
+                        color_hex = str(color) if color else '#6366F1'
+                        if not color_hex.startswith('#'):
+                            color_hex = '#6366F1'
+                    except Exception:
+                        color_hex = '#6366F1'
+                
+                # Рисуем закругленный прямоугольник с тегом для привязки событий
+                tag = 'button_item'
+                canvas.create_arc(0, 0, radius*2, radius*2, start=90, extent=90, 
+                                fill=color_hex, outline=color_hex, tags=tag)
+                canvas.create_arc(w-radius*2, 0, w, radius*2, start=0, extent=90, 
+                                fill=color_hex, outline=color_hex, tags=tag)
+                canvas.create_arc(0, h-radius*2, radius*2, h, start=180, extent=90, 
+                                fill=color_hex, outline=color_hex, tags=tag)
+                canvas.create_arc(w-radius*2, h-radius*2, w, h, start=270, extent=90, 
+                                fill=color_hex, outline=color_hex, tags=tag)
+                canvas.create_rectangle(radius, 0, w-radius, h, fill=color_hex, outline=color_hex, tags=tag)
+                canvas.create_rectangle(0, radius, w, h-radius, fill=color_hex, outline=color_hex, tags=tag)
+                
+                canvas.create_text(w//2, h//2, text=canvas.btn_text, 
+                                 fill=text_color, font=canvas.btn_font, width=max(w-20, 50), tags=tag)
+                
+                # Привязываем события клика к элементам через тег
+                # Это важно, чтобы клики на текст и фигуры тоже обрабатывались
+                # Используем только Button-1, чтобы избежать двойных вызовов
+                try:
+                    canvas.tag_bind(tag, '<Button-1>', on_click)
+                except Exception:
+                    pass
+            finally:
+                canvas._drawing = False
+        
+        # Привязка событий мыши к canvas
+        # Важно: привязываем только к canvas, чтобы избежать двойных вызовов
         canvas.bind('<Button-1>', on_click)
         canvas.bind('<Enter>', on_enter)
         canvas.bind('<Leave>', on_leave)
         canvas.bind('<Configure>', on_configure)
         
-        canvas.after(10, lambda: draw_button('normal'))
+        # Убеждаемся, что canvas может получать события
+        canvas.update_idletasks()
+        
+        # Привязываем события после первой отрисовки
+        canvas.after(50, lambda: draw_button('normal'))
         
         return btn_frame
 

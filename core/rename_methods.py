@@ -34,9 +34,15 @@ class RenameMethod(ABC):
 class AddRemoveMethod(RenameMethod):
     """Метод добавления/удаления текста"""
     
-    def __init__(self, operation: str, text: str = "", position: str = "before",
-                 remove_type: Optional[str] = None, remove_start: Optional[str] = None,
-                 remove_end: Optional[str] = None):
+    def __init__(
+        self,
+        operation: str,
+        text: str = "",
+        position: str = "before",
+        remove_type: Optional[str] = None,
+        remove_start: Optional[str] = None,
+        remove_end: Optional[str] = None
+    ):
         """
         Args:
             operation: "add" или "remove"
@@ -136,6 +142,13 @@ class ReplaceMethod(RenameMethod):
         self.replace = replace
         self.case_sensitive = case_sensitive
         self.full_match = full_match
+        # Кэшируем скомпилированный regex для регистронезависимой замены
+        self._compiled_pattern = None
+        if find and not case_sensitive and not full_match:
+            try:
+                self._compiled_pattern = re.compile(re.escape(find), re.IGNORECASE)
+            except re.error:
+                self._compiled_pattern = None
     
     def apply(self, name: str, extension: str, file_path: str) -> Tuple[str, str]:
         if not self.find:
@@ -158,9 +171,13 @@ class ReplaceMethod(RenameMethod):
             if self.case_sensitive:
                 new_name = name.replace(self.find, self.replace)
             else:
-                # Регистронезависимая замена
-                pattern = re.compile(re.escape(self.find), re.IGNORECASE)
-                new_name = pattern.sub(self.replace, name)
+                # Регистронезависимая замена - используем кэшированный паттерн
+                if self._compiled_pattern:
+                    new_name = self._compiled_pattern.sub(self.replace, name)
+                else:
+                    # Fallback, если компиляция не удалась
+                    pattern = re.compile(re.escape(self.find), re.IGNORECASE)
+                    new_name = pattern.sub(self.replace, name)
         
         return new_name, extension
 
@@ -208,8 +225,14 @@ class CaseMethod(RenameMethod):
 class NumberingMethod(RenameMethod):
     """Метод нумерации файлов"""
     
-    def __init__(self, start: int = 1, step: int = 1, digits: int = 3,
-                 format_str: str = "({n})", position: str = "end"):
+    def __init__(
+        self,
+        start: int = 1,
+        step: int = 1,
+        digits: int = 3,
+        format_str: str = "({n})",
+        position: str = "end"
+    ):
         """
         Args:
             start: Начальный индекс
@@ -241,8 +264,8 @@ class NumberingMethod(RenameMethod):
         
         return new_name, extension
     
-    def reset(self):
-        """Сброс счетчика (вызывается перед применением к новому списку)"""
+    def reset(self) -> None:
+        """Сброс счетчика (вызывается перед применением к новому списку)."""
         self.current_number = self.start
 
 
@@ -326,6 +349,8 @@ class NewNameMethod(RenameMethod):
         self.file_number = file_number
         # Определение формата нумерации из шаблона
         self.number_format = self._detect_number_format(template)
+        # Предварительно определяем, какие метаданные теги используются в шаблоне
+        self.required_metadata_tags = self._detect_metadata_tags(template)
     
     def _detect_number_format(self, template: str) -> dict:
         """Определение формата нумерации из шаблона"""
@@ -335,6 +360,19 @@ class NewNameMethod(RenameMethod):
             digits = int(match.group(1))
             return {'format': f'{{:0{digits}d}}', 'digits': digits}
         return {'format': '{}', 'digits': 0}
+    
+    def _detect_metadata_tags(self, template: str) -> set:
+        """Определение используемых тегов метаданных в шаблоне"""
+        metadata_tags = {
+            "{width}x{height}", "{width}", "{height}", "{date_created}", 
+            "{date_modified}", "{file_size}", "{artist}", "{title}", 
+            "{album}", "{year}", "{track}", "{genre}"
+        }
+        found_tags = set()
+        for tag in metadata_tags:
+            if tag in template:
+                found_tags.add(tag)
+        return found_tags
     
     def apply(self, name: str, extension: str, file_path: str) -> Tuple[str, str]:
         """Применение шаблона для создания нового имени"""
@@ -359,55 +397,17 @@ class NewNameMethod(RenameMethod):
             # Простая замена {n}
             new_name = new_name.replace("{n}", str(self.file_number))
         
-        # Метаданные (если доступны)
-        if self.metadata_extractor:
-            # {width}x{height}
-            if "{width}x{height}" in new_name:
-                dims = self.metadata_extractor.extract("{width}x{height}", file_path)
-                if dims:
-                    new_name = new_name.replace("{width}x{height}", dims)
-                else:
-                    new_name = new_name.replace("{width}x{height}", "")
+        # Метаданные (если доступны) - используем предварительно определенные теги
+        if self.metadata_extractor and self.required_metadata_tags:
+            # Извлекаем все необходимые метаданные за один проход
+            metadata_values = {}
+            for tag in self.required_metadata_tags:
+                value = self.metadata_extractor.extract(tag, file_path)
+                metadata_values[tag] = value or ""
             
-            # {width}
-            if "{width}" in new_name:
-                width = self.metadata_extractor.extract("{width}", file_path)
-                if width:
-                    new_name = new_name.replace("{width}", width)
-                else:
-                    new_name = new_name.replace("{width}", "")
-            
-            # {height}
-            if "{height}" in new_name:
-                height = self.metadata_extractor.extract("{height}", file_path)
-                if height:
-                    new_name = new_name.replace("{height}", height)
-                else:
-                    new_name = new_name.replace("{height}", "")
-            
-            # {date_created}
-            if "{date_created}" in new_name:
-                date = self.metadata_extractor.extract("{date_created}", file_path)
-                if date:
-                    new_name = new_name.replace("{date_created}", date)
-                else:
-                    new_name = new_name.replace("{date_created}", "")
-            
-            # {date_modified}
-            if "{date_modified}" in new_name:
-                date = self.metadata_extractor.extract("{date_modified}", file_path)
-                if date:
-                    new_name = new_name.replace("{date_modified}", date)
-                else:
-                    new_name = new_name.replace("{date_modified}", "")
-            
-            # {file_size}
-            if "{file_size}" in new_name:
-                size = self.metadata_extractor.extract("{file_size}", file_path)
-                if size:
-                    new_name = new_name.replace("{file_size}", size)
-                else:
-                    new_name = new_name.replace("{file_size}", "")
+            # Заменяем все теги одним проходом
+            for tag, value in metadata_values.items():
+                new_name = new_name.replace(tag, value)
         
         # Условная логика в шаблонах: {if:condition:then:else}
         # Пример: {if:{ext}==jpg:IMG_{n}:FILE_{n}}
@@ -493,7 +493,7 @@ class NewNameMethod(RenameMethod):
         
         return result
     
-    def reset(self):
-        """Сброс счетчика (вызывается перед применением к новому списку)"""
+    def reset(self) -> None:
+        """Сброс счетчика (вызывается перед применением к новому списку)."""
         self.file_number = self.start_number
 

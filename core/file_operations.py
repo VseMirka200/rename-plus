@@ -4,7 +4,7 @@ import logging
 import os
 import threading
 from pathlib import Path
-from typing import Callable, Dict, List, Optional
+from typing import Callable, Dict, List, Optional, Set
 
 # Настройка логирования
 logger = logging.getLogger(__name__)
@@ -16,28 +16,51 @@ try:
 except ImportError:
     HAS_BACKUP = False
 
+# Кэш для нормализованных путей (для оптимизации проверки дубликатов)
+_path_cache: Set[str] = set()
 
-def add_file_to_list(file_path: str, files_list: List[Dict]) -> Optional[Dict]:
+# Кэш зарезервированных имен Windows (вычисляется один раз)
+_RESERVED_NAMES = frozenset(
+    ['CON', 'PRN', 'AUX', 'NUL'] +
+    [f'COM{i}' for i in range(1, 10)] +
+    [f'LPT{i}' for i in range(1, 10)]
+)
+
+# Кэш запрещенных символов (вычисляется один раз)
+_INVALID_CHARS = frozenset(['<', '>', ':', '"', '/', '\\', '|', '?', '*'])
+
+
+def add_file_to_list(file_path: str, files_list: List[Dict], path_cache: Optional[Set[str]] = None) -> Optional[Dict]:
     """Добавление файла в список для переименования.
     
     Args:
         file_path: Путь к файлу
         files_list: Список файлов для добавления
+        path_cache: Множество нормализованных путей для быстрой проверки дубликатов (опционально)
         
     Returns:
         Словарь с данными файла или None если файл уже существует
     """
-    if not os.path.exists(file_path) or not os.path.isfile(file_path):
+    # Используем одну проверку os.path.exists вместо двух
+    try:
+        if not os.path.isfile(file_path):
+            return None
+    except (OSError, ValueError):
         return None
     
-    # Проверка на дубликаты
+    # Проверка на дубликаты - используем set для O(1) проверки
     normalized_path = os.path.normpath(os.path.abspath(file_path))
-    for existing_file in files_list:
-        existing_path = existing_file.get('full_path') or existing_file.get('path')
-        if existing_path:
-            existing_path = os.path.normpath(os.path.abspath(existing_path))
-            if existing_path == normalized_path:
-                return None
+    
+    # Используем переданный кэш или создаем из списка файлов
+    if path_cache is None:
+        path_cache = {os.path.normpath(os.path.abspath(f.get('full_path') or f.get('path', '')))
+                     for f in files_list if f.get('full_path') or f.get('path')}
+    
+    if normalized_path in path_cache:
+        return None
+    
+    # Добавляем путь в кэш
+    path_cache.add(normalized_path)
     
     # Получаем имя файла и расширение
     path_obj = Path(file_path)
@@ -72,17 +95,15 @@ def validate_filename(name: str, extension: str, path: str, index: int) -> str:
     if not name or not name.strip():
         return "Ошибка: пустое имя"
     
-    # Запрещенные символы в именах файлов Windows
-    invalid_chars = ['<', '>', ':', '"', '/', '\\', '|', '?', '*']
-    for char in invalid_chars:
-        if char in name:
-            return f"Ошибка: недопустимый символ '{char}'"
+    # Запрещенные символы в именах файлов Windows (используем кэш)
+    if any(char in name for char in _INVALID_CHARS):
+        # Находим первый недопустимый символ для сообщения об ошибке
+        for char in _INVALID_CHARS:
+            if char in name:
+                return f"Ошибка: недопустимый символ '{char}'"
     
-    # Проверка на зарезервированные имена Windows
-    reserved_names = ['CON', 'PRN', 'AUX', 'NUL'] + \
-                     [f'COM{i}' for i in range(1, 10)] + \
-                     [f'LPT{i}' for i in range(1, 10)]
-    if name.upper() in reserved_names:
+    # Проверка на зарезервированные имена Windows (используем кэш)
+    if name.upper() in _RESERVED_NAMES:
         return f"Ошибка: зарезервированное имя '{name}'"
     
     # Проверка длины имени (Windows ограничение: 255 символов для полного пути)
@@ -119,12 +140,14 @@ def check_conflicts(files_list: List[Dict]) -> None:
                 file_data['status'] = f"Конфликт: {len(file_list)} файла с именем '{full_name}'"
 
 
-def rename_files_thread(files_to_rename: List[Dict], 
-                        callback: Callable[[int, int, List[Dict]], None],
-                        log_callback: Optional[Callable[[str], None]] = None,
-                        backup_manager: Optional[BackupManager] = None,
-                        progress_callback: Optional[Callable[[int, int, str], None]] = None,
-                        cancel_var: Optional[threading.Event] = None) -> None:
+def rename_files_thread(
+    files_to_rename: List[Dict],
+    callback: Callable[[int, int, List[Dict]], None],
+    log_callback: Optional[Callable[[str], None]] = None,
+    backup_manager: Optional[BackupManager] = None,
+    progress_callback: Optional[Callable[[int, int, str], None]] = None,
+    cancel_var: Optional[threading.Event] = None
+) -> None:
     """Переименование файлов в отдельном потоке.
     
     Args:
@@ -175,17 +198,17 @@ def rename_files_thread(files_to_rename: List[Dict],
                 # Нормализуем путь
                 old_path = os.path.normpath(old_path)
                 
-                # Проверяем существование исходного файла
-                if not os.path.exists(old_path):
+                # Проверяем существование исходного файла (объединяем проверки)
+                try:
+                    if not os.path.isfile(old_path):
+                        error_msg = f"Исходный файл не найден или не является файлом: {os.path.basename(old_path)}"
+                        if log_callback:
+                            log_callback(f"Ошибка: {error_msg}")
+                        file_data['status'] = f"Ошибка: {error_msg}"
+                        error_count += 1
+                        continue
+                except (OSError, ValueError):
                     error_msg = f"Исходный файл не найден: {os.path.basename(old_path)}"
-                    if log_callback:
-                        log_callback(f"Ошибка: {error_msg}")
-                    file_data['status'] = f"Ошибка: {error_msg}"
-                    error_count += 1
-                    continue
-                
-                if not os.path.isfile(old_path):
-                    error_msg = f"Путь не является файлом: {os.path.basename(old_path)}"
                     if log_callback:
                         log_callback(f"Ошибка: {error_msg}")
                     file_data['status'] = f"Ошибка: {error_msg}"
@@ -216,50 +239,36 @@ def rename_files_thread(files_to_rename: List[Dict],
                     success_count += 1
                     continue
                 
-                # Проверяем, существует ли файл с таким именем
-                if os.path.exists(new_path):
-                    error_msg = f"Файл '{new_name + extension}' уже существует"
-                    if log_callback:
-                        log_callback(f"Ошибка: {error_msg}")
-                    file_data['status'] = f"Ошибка: {error_msg}"
-                    error_count += 1
-                    continue
-                
-                # Проверяем, что директория существует
-                if not os.path.exists(directory):
-                    error_msg = f"Директория не существует: {directory}"
-                    if log_callback:
-                        log_callback(f"Ошибка: {error_msg}")
-                    file_data['status'] = f"Ошибка: {error_msg}"
-                    error_count += 1
-                    continue
+                # Проверяем, существует ли файл с таким именем (os.path.exists уже проверяет и файлы, и директории)
+                try:
+                    if os.path.exists(new_path):
+                        error_msg = f"Файл '{new_name + extension}' уже существует"
+                        if log_callback:
+                            log_callback(f"Ошибка: {error_msg}")
+                        file_data['status'] = f"Ошибка: {error_msg}"
+                        error_count += 1
+                        continue
+                except (OSError, ValueError):
+                    pass  # Продолжаем, если проверка не удалась
                 
                 # Переименовываем файл
                 try:
                     os.rename(old_path, new_path)
+                    # Если переименование успешно, os.rename гарантирует, что файл существует по новому пути
+                    # Проверка os.path.exists(new_path) не нужна
                 except OSError as rename_error:
                     # Проверяем, что исходный файл все еще существует
-                    if not os.path.exists(old_path):
-                        error_msg = f"Исходный файл был удален при переименовании: {os.path.basename(old_path)}"
-                    else:
+                    try:
+                        if not os.path.exists(old_path):
+                            error_msg = f"Исходный файл был удален при переименовании: {os.path.basename(old_path)}"
+                        else:
+                            error_msg = f"Ошибка переименования: {str(rename_error)}"
+                    except (OSError, ValueError):
                         error_msg = f"Ошибка переименования: {str(rename_error)}"
                     if log_callback:
                         log_callback(f"Ошибка: {error_msg}")
                     file_data['status'] = f"Ошибка: {error_msg}"
                     error_count += 1
-                    continue
-                
-                # Проверяем, что файл успешно переименован
-                if not os.path.exists(new_path):
-                    error_msg = f"Файл не найден после переименования: {new_name + extension}"
-                    if log_callback:
-                        log_callback(f"Ошибка: {error_msg}")
-                    file_data['status'] = f"Ошибка: {error_msg}"
-                    error_count += 1
-                    # Проверяем, существует ли исходный файл
-                    if os.path.exists(old_path):
-                        if log_callback:
-                            log_callback(f"Исходный файл восстановлен: {os.path.basename(old_path)}")
                     continue
                 
                 # Обновляем путь в данных файла
@@ -280,10 +289,13 @@ def rename_files_thread(files_to_rename: List[Dict],
                     log_callback(f"Ошибка при переименовании '{file_data.get('old_name', 'unknown')}': {error_msg}")
                 file_data['status'] = f"Ошибка: {error_msg}"
                 error_count += 1
-                # Проверяем, что исходный файл все еще существует
-                if old_path and os.path.exists(old_path):
-                    if log_callback:
-                        log_callback(f"Исходный файл сохранен: {os.path.basename(old_path)}")
+                # Проверяем, что исходный файл все еще существует (опционально, только для логирования)
+                if old_path:
+                    try:
+                        if os.path.exists(old_path) and log_callback:
+                            log_callback(f"Исходный файл сохранен: {os.path.basename(old_path)}")
+                    except (OSError, ValueError):
+                        pass
             
             # Обновление прогресса даже при ошибке
             if progress_callback:

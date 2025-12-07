@@ -21,7 +21,7 @@ class Logger:
         """
         self.log_text = log_text_widget
     
-    def set_log_widget(self, log_text_widget: tk.Text):
+    def set_log_widget(self, log_text_widget: tk.Text) -> None:
         """Установка виджета для логирования.
         
         Args:
@@ -38,8 +38,9 @@ class Logger:
         timestamp = datetime.now().strftime("%H:%M:%S")
         log_message = f"[{timestamp}] {message}\n"
         
-        # Выводим в консоль для отладки
-        print(log_message.strip())
+        # Выводим в консоль для отладки (только в режиме отладки)
+        if logger.isEnabledFor(logging.DEBUG):
+            print(log_message.strip())
         
         # Добавляем в лог, если виджет доступен
         if self.log_text is not None:

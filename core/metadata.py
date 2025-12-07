@@ -6,18 +6,24 @@
 import logging
 import os
 from datetime import datetime
-from typing import Optional
+from functools import lru_cache
+from typing import Dict, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
 
 class MetadataExtractor:
-    """Класс для извлечения метаданных из файлов"""
+    """Класс для извлечения метаданных из файлов."""
     
     def __init__(self):
-        """Инициализация экстрактора метаданных"""
+        """Инициализация экстрактора метаданных."""
         self.pillow_available = False
         self.mutagen_available = False
+        
+        # Кэш для метаданных изображений (чтобы не открывать файл несколько раз)
+        self._image_cache: Dict[str, Tuple[int, int, Optional[object]]] = {}
+        # Кэш для аудио метаданных
+        self._audio_cache: Dict[str, Optional[object]] = {}
         
         # Попытка импортировать Pillow для работы с изображениями
         try:
@@ -38,6 +44,11 @@ class MetadataExtractor:
             self.mutagen_available = True
         except ImportError:
             self.mutagen_available = False
+    
+    def clear_cache(self):
+        """Очистка кэша метаданных."""
+        self._image_cache.clear()
+        self._audio_cache.clear()
     
     def extract(self, tag: str, file_path: str) -> Optional[str]:
         """
@@ -89,45 +100,86 @@ class MetadataExtractor:
         
         return None
     
-    def _extract_dimensions(self, file_path: str) -> Optional[str]:
-        """Извлечение размеров изображения (ширина x высота)"""
+    def _get_image_data(self, file_path: str) -> Optional[Tuple[int, int, Optional[object]]]:
+        """Получение данных изображения с кэшированием.
+        
+        Args:
+            file_path: Путь к файлу изображения
+            
+        Returns:
+            Кортеж (width, height, exifdata) или None
+        """
         if not self.pillow_available:
             return None
+        
+        # Проверяем кэш
+        if file_path in self._image_cache:
+            return self._image_cache[file_path]
         
         try:
             with self.Image.open(file_path) as img:
                 width, height = img.size
-                return f"{width}x{height}"
+                exifdata = img.getexif()
+                result = (width, height, exifdata)
+                # Кэшируем результат
+                self._image_cache[file_path] = result
+                return result
         except Exception as e:
-            logger.debug(f"Не удалось извлечь размеры изображения {file_path}: {e}")
+            logger.debug(f"Не удалось извлечь данные изображения {file_path}: {e}")
             return None
+    
+    def _extract_dimensions(self, file_path: str) -> Optional[str]:
+        """Извлечение размеров изображения (ширина x высота).
+        
+        Args:
+            file_path: Путь к файлу изображения
+            
+        Returns:
+            Строка с размерами в формате "widthxheight" или None
+        """
+        image_data = self._get_image_data(file_path)
+        if image_data:
+            width, height, _ = image_data
+            return f"{width}x{height}"
+        return None
     
     def _extract_width(self, file_path: str) -> Optional[str]:
-        """Извлечение ширины изображения"""
-        if not self.pillow_available:
-            return None
+        """Извлечение ширины изображения.
         
-        try:
-            with self.Image.open(file_path) as img:
-                return str(img.size[0])
-        except Exception as e:
-            logger.debug(f"Не удалось извлечь ширину изображения {file_path}: {e}")
-            return None
+        Args:
+            file_path: Путь к файлу изображения
+            
+        Returns:
+            Ширина изображения в пикселях или None
+        """
+        image_data = self._get_image_data(file_path)
+        if image_data:
+            return str(image_data[0])
+        return None
     
     def _extract_height(self, file_path: str) -> Optional[str]:
-        """Извлечение высоты изображения"""
-        if not self.pillow_available:
-            return None
+        """Извлечение высоты изображения.
         
-        try:
-            with self.Image.open(file_path) as img:
-                return str(img.size[1])
-        except Exception as e:
-            logger.debug(f"Не удалось извлечь высоту изображения {file_path}: {e}")
-            return None
+        Args:
+            file_path: Путь к файлу изображения
+            
+        Returns:
+            Высота изображения в пикселях или None
+        """
+        image_data = self._get_image_data(file_path)
+        if image_data:
+            return str(image_data[1])
+        return None
     
     def _extract_date_created(self, file_path: str) -> Optional[str]:
-        """Извлечение даты создания файла"""
+        """Извлечение даты создания файла.
+        
+        Args:
+            file_path: Путь к файлу
+            
+        Returns:
+            Дата создания в формате YYYY-MM-DD или None
+        """
         try:
             # В Windows используется st_ctime, в Unix - st_birthtime (если доступно)
             stat = os.stat(file_path)
@@ -147,7 +199,14 @@ class MetadataExtractor:
             return None
     
     def _extract_date_modified(self, file_path: str) -> Optional[str]:
-        """Извлечение даты изменения файла"""
+        """Извлечение даты изменения файла.
+        
+        Args:
+            file_path: Путь к файлу
+            
+        Returns:
+            Дата изменения в формате YYYY-MM-DD или None
+        """
         try:
             stat = os.stat(file_path)
             timestamp = stat.st_mtime
@@ -158,7 +217,14 @@ class MetadataExtractor:
             return None
     
     def _extract_file_size(self, file_path: str) -> Optional[str]:
-        """Извлечение размера файла"""
+        """Извлечение размера файла.
+        
+        Args:
+            file_path: Путь к файлу
+            
+        Returns:
+            Размер файла в отформатированном виде (B, KB, MB, GB) или None
+        """
         try:
             size = os.path.getsize(file_path)
             
@@ -175,6 +241,45 @@ class MetadataExtractor:
             logger.debug(f"Не удалось извлечь размер файла {file_path}: {e}")
             return None
     
+    def _get_audio_tags(self, file_path: str) -> Optional[object]:
+        """Получение тегов аудио файла с кэшированием.
+        
+        Args:
+            file_path: Путь к аудио файлу
+            
+        Returns:
+            Объект тегов или None
+        """
+        if not self.mutagen_available:
+            return None
+        
+        # Проверяем кэш
+        if file_path in self._audio_cache:
+            return self._audio_cache[file_path]
+        
+        try:
+            audio_file = self.MutagenFile(file_path)
+            if audio_file is None:
+                self._audio_cache[file_path] = None
+                return None
+            
+            # Получаем теги
+            tags = audio_file.tags
+            if tags is None:
+                self._audio_cache[file_path] = None
+                return None
+            
+            # Кэшируем результат
+            self._audio_cache[file_path] = tags
+            return tags
+        except self.ID3NoHeaderError:
+            self._audio_cache[file_path] = None
+            return None
+        except Exception as e:
+            logger.debug(f"Не удалось извлечь аудио теги из {file_path}: {e}")
+            self._audio_cache[file_path] = None
+            return None
+    
     def _extract_audio_tag(self, file_path: str, tag_name: str) -> Optional[str]:
         """Извлечение метаданных аудио файла.
         
@@ -185,20 +290,13 @@ class MetadataExtractor:
         Returns:
             Значение тега или None
         """
-        if not self.mutagen_available:
+        tags = self._get_audio_tags(file_path)
+        if tags is None:
             return None
         
         try:
-            audio_file = self.MutagenFile(file_path)
-            if audio_file is None:
-                return None
             
-            # Получаем теги
-            tags = audio_file.tags
-            if tags is None:
-                return None
-            
-            # Маппинг имен тегов для разных форматов
+            # Маппинг имен тегов для разных форматов (кэшируем как константу)
             tag_mapping = {
                 'artist': ['TPE1', 'ARTIST', '©ART'],
                 'title': ['TIT2', 'TITLE', '©nam'],
@@ -225,33 +323,36 @@ class MetadataExtractor:
                         return str(value).strip()
             
             return None
-        except self.ID3NoHeaderError:
-            # Файл не имеет ID3 заголовка, пробуем другие форматы
-            return None
         except Exception as e:
             logger.debug(f"Не удалось извлечь аудио тег {tag_name} из {file_path}: {e}")
             return None
     
     def _extract_custom_tag(self, tag: str, file_path: str) -> Optional[str]:
-        """Извлечение пользовательского тега (расширяемая функция)"""
+        """Извлечение пользовательского тега (расширяемая функция).
+        
+        Args:
+            tag: Тег для извлечения
+            file_path: Путь к файлу
+            
+        Returns:
+            Значение тега или None
+        """
         # Здесь можно добавить поддержку дополнительных тегов
         # Например, EXIF данные из изображений
         
         if not self.pillow_available:
             return None
         
-        # Попытка извлечь EXIF данные
-        try:
-            with self.Image.open(file_path) as img:
-                exifdata = img.getexif()
-                if exifdata:
-                    # Поиск тега в EXIF данных
-                    for tag_id, value in exifdata.items():
-                        tag_name = self.TAGS.get(tag_id, tag_id)
-                        if tag.lower() == f"{{{tag_name.lower()}}}":
-                            return str(value)
-        except Exception as e:
-            logger.debug(f"Не удалось извлечь пользовательский тег {tag} из {file_path}: {e}")
+        # Используем кэшированные данные изображения
+        image_data = self._get_image_data(file_path)
+        if image_data:
+            _, _, exifdata = image_data
+            if exifdata:
+                # Поиск тега в EXIF данных
+                for tag_id, value in exifdata.items():
+                    tag_name = self.TAGS.get(tag_id, tag_id)
+                    if tag.lower() == f"{{{tag_name.lower()}}}":
+                        return str(value)
         
         return None
 

@@ -45,6 +45,8 @@ from core.file_operations import (
     validate_filename,
 )
 from core.metadata import MetadataExtractor
+from core.metadata_remover import MetadataRemover
+from core.file_converter import FileConverter
 from core.methods_manager import MethodsManager
 from core.rename_methods import (
     AddRemoveMethod,
@@ -146,6 +148,13 @@ logger = logging.getLogger(__name__)
 
 
 class FileRenamerApp:
+    """Main application class for file renaming with GUI.
+    
+    This class manages the entire application lifecycle including:
+    - UI creation and management
+    - File operations (rename, metadata removal, conversion)
+    - Settings and templates management
+    - Plugin system integration
     """Главный класс приложения для переименования файлов."""
     
     def __init__(self, root):
@@ -215,6 +224,16 @@ class FileRenamerApp:
         
         # Инициализация модуля метаданных
         self.metadata_extractor = MetadataExtractor()
+        
+        # Инициализация модуля удаления метаданных
+        self.metadata_remover = MetadataRemover()
+        
+        # Инициализация модуля конвертации файлов
+        self.file_converter = FileConverter()
+        
+        # Инициализация списков для новых вкладок
+        self.metadata_removal_files = []
+        self.converter_files = []
         
         # Инициализация менеджера методов
         self.methods_manager = MethodsManager(self.metadata_extractor)
@@ -398,35 +417,29 @@ class FileRenamerApp:
                     available_width = max(list_frame_width - 30, 200)
                     
                     # Убеждаемся, что минимальные ширины не слишком большие
-                    min_width_old = max(50, int(available_width * 0.15))
-                    min_width_new = max(50, int(available_width * 0.15))
-                    min_width_ext = max(35, int(available_width * 0.08))
-                    min_width_path = max(60, int(available_width * 0.25))
+                    min_width_old = max(50, int(available_width * 0.20))
+                    min_width_new = max(50, int(available_width * 0.20))
+                    min_width_path = max(60, int(available_width * 0.50))
                     min_width_status = max(40, int(available_width * 0.10))
                     
                     self.tree.column(
                         "old_name",
-                        width=int(available_width * 0.22),
+                        width=int(available_width * 0.25),
                         minwidth=min_width_old
                     )
                     self.tree.column(
                         "new_name",
-                        width=int(available_width * 0.22),
+                        width=int(available_width * 0.25),
                         minwidth=min_width_new
                     )
                     self.tree.column(
-                        "extension",
-                        width=int(available_width * 0.10),
-                        minwidth=min_width_ext
-                    )
-                    self.tree.column(
                         "path",
-                        width=int(available_width * 0.35),
+                        width=int(available_width * 0.40),
                         minwidth=min_width_path
                     )
                     self.tree.column(
                         "status",
-                        width=int(available_width * 0.11),
+                        width=int(available_width * 0.10),
                         minwidth=min_width_status
                     )
             except Exception as e:
@@ -684,60 +697,6 @@ class FileRenamerApp:
         self.left_panel = left_panel
         
         
-        # Панель поиска и фильтрации
-        search_panel = tk.Frame(left_panel, bg=self.colors['bg_card'])
-        search_panel.pack(fill=tk.X, pady=(0, 6))
-        search_panel.columnconfigure(1, weight=1)
-        
-        search_label = tk.Label(
-            search_panel, 
-            text="Поиск:", 
-            bg=self.colors['bg_card'], 
-            fg=self.colors['text_primary'],
-            font=('Robot', 9)
-        )
-        search_label.grid(row=0, column=0, padx=(0, 5), sticky="w")
-        
-        self.search_entry = tk.Entry(
-            search_panel,
-            font=('Robot', 9),
-            bg=self.colors['bg_input'],
-            fg=self.colors['text_primary'],
-            insertbackground=self.colors['text_primary']
-        )
-        self.search_entry.grid(row=0, column=1, sticky="ew", padx=(0, 5))
-        self.search_entry.bind('<KeyRelease>', self.on_search_change)
-        
-        # Кнопка очистки поиска
-        btn_clear_search = tk.Button(
-            search_panel,
-            text="✕",
-            command=self.clear_search,
-            font=('Robot', 8),
-            bg=self.colors['bg_card'],
-            fg=self.colors['text_secondary'],
-            relief=tk.FLAT,
-            cursor='hand2',
-            width=3
-        )
-        btn_clear_search.grid(row=0, column=2, padx=(0, 5))
-        
-        # Чекбокс для regex
-        self.search_regex_var = tk.BooleanVar(value=False)
-        regex_check = tk.Checkbutton(
-            search_panel,
-            text="Regex",
-            variable=self.search_regex_var,
-            command=self.on_search_change,
-            font=('Robot', 8),
-            bg=self.colors['bg_card'],
-            fg=self.colors['text_primary'],
-            selectcolor=self.colors['bg_card'],
-            activebackground=self.colors['bg_card'],
-            activeforeground=self.colors['text_primary']
-        )
-        regex_check.grid(row=0, column=3, padx=(0, 0))
-        
         # Панель управления файлами
         control_panel = tk.Frame(left_panel, bg=self.colors['bg_card'])
         control_panel.pack(fill=tk.X, pady=(0, 6))
@@ -767,26 +726,6 @@ class FileRenamerApp:
             active_bg=self.colors['danger_hover'])
         btn_clear.grid(row=0, column=2, padx=(0, 4), sticky="ew")
         
-        # Кнопки экспорта/импорта
-        import_export_frame = tk.Frame(left_panel, bg=self.colors['bg_card'])
-        import_export_frame.pack(fill=tk.X, pady=(0, 6))
-        import_export_frame.columnconfigure(0, weight=1)
-        import_export_frame.columnconfigure(1, weight=1)
-        
-        btn_export = self.create_rounded_button(
-            import_export_frame, "Экспорт списка", self.export_files_list,
-            self.colors['primary'], 'white',
-            font=('Robot', 8, 'bold'), padx=8, pady=5,
-            active_bg=self.colors['primary_hover'])
-        btn_export.grid(row=0, column=0, padx=(0, 4), sticky="ew")
-        
-        btn_import = self.create_rounded_button(
-            import_export_frame, "Импорт списка", self.import_files_list,
-            self.colors['primary'], 'white',
-            font=('Robot', 8, 'bold'), padx=8, pady=5,
-            active_bg=self.colors['primary_hover'])
-        btn_import.grid(row=0, column=1, padx=(0, 4), sticky="ew")
-        
         # Таблица файлов
         list_frame = ttk.Frame(left_panel)
         list_frame.pack(fill=tk.BOTH, expand=True)
@@ -795,7 +734,7 @@ class FileRenamerApp:
         scrollbar_y = ttk.Scrollbar(list_frame, orient=tk.VERTICAL)
         scrollbar_x = ttk.Scrollbar(list_frame, orient=tk.HORIZONTAL)
         
-        columns = ("old_name", "new_name", "extension", "path", "status")
+        columns = ("old_name", "new_name", "path", "status")
         self.tree = ttk.Treeview(
             list_frame,
             columns=columns,
@@ -811,7 +750,6 @@ class FileRenamerApp:
         # Настройка колонок
         self.tree.heading("old_name", text="Исходное имя")
         self.tree.heading("new_name", text="Новое имя")
-        self.tree.heading("extension", text="Расширение")
         self.tree.heading("path", text="Путь")
         self.tree.heading("status", text="Статус")
         
@@ -837,7 +775,6 @@ class FileRenamerApp:
         # Используем минимальные ширины, которые будут обновлены при изменении размера
         self.tree.column("old_name", width=120, anchor='w', minwidth=60)
         self.tree.column("new_name", width=120, anchor='w', minwidth=60)
-        self.tree.column("extension", width=50, anchor='center', minwidth=40)
         self.tree.column("path", width=200, anchor='w', minwidth=80)
         self.tree.column("status", width=60, anchor='center', minwidth=50)
         
@@ -892,7 +829,7 @@ class FileRenamerApp:
         # Привязка сортировки
         self.sort_column_name = None
         self.sort_reverse = False
-        for col in ("old_name", "new_name", "extension", "path", "status"):
+        for col in ("old_name", "new_name", "path", "status"):
             self.tree.heading(col, command=lambda c=col: self.sort_column(c))
         
         # === ПРОГРЕСС БАР (под списком файлов слева) ===
@@ -962,21 +899,48 @@ class FileRenamerApp:
         
         # Флаг для предотвращения бесконечных циклов
         _updating_scroll = False
+        # Флаг для отслеживания, нужна ли прокрутка
+        _needs_scrolling_settings = True
         
         def update_scroll_region():
             """Обновление области прокрутки и видимости скроллбара"""
-            nonlocal _updating_scroll
+            nonlocal _updating_scroll, _needs_scrolling_settings
             if _updating_scroll:
                 return
             _updating_scroll = True
             try:
+                settings_canvas.update_idletasks()
                 bbox = settings_canvas.bbox("all")
                 if bbox:
-                    # Устанавливаем scrollregion точно по содержимому
-                    settings_canvas.configure(scrollregion=bbox)
-                    
-                    # Используем универсальную функцию для управления скроллбаром
-                    self.update_scrollbar_visibility(settings_canvas, settings_scrollbar, 'vertical')
+                    canvas_height = settings_canvas.winfo_height()
+                    if canvas_height > 1:
+                        # Высота содержимого
+                        content_height = bbox[3] - bbox[1]
+                        # Если содержимое помещается (с небольшим запасом), скрываем скроллбар
+                        if content_height <= canvas_height + 2:  # Небольшой запас для погрешности
+                            # Устанавливаем scrollregion равным видимой области, чтобы запретить прокрутку
+                            settings_canvas.configure(scrollregion=(0, 0, bbox[2], canvas_height))
+                            # Сбрасываем позицию прокрутки в начало
+                            settings_canvas.yview_moveto(0)
+                            _needs_scrolling_settings = False
+                            # Скрываем скроллбар
+                            try:
+                                if settings_scrollbar.winfo_viewable():
+                                    settings_scrollbar.grid_remove()
+                            except (tk.TclError, AttributeError):
+                                pass
+                        else:
+                            # Обновляем scrollregion для прокрутки
+                            settings_canvas.configure(scrollregion=bbox)
+                            _needs_scrolling_settings = True
+                            # Показываем скроллбар, если он был скрыт
+                            try:
+                                if not settings_scrollbar.winfo_viewable():
+                                    settings_scrollbar.grid(row=0, column=1, sticky="ns")
+                            except (tk.TclError, AttributeError):
+                                pass
+                            # Используем универсальную функцию для управления скроллбаром
+                            self.update_scrollbar_visibility(settings_canvas, settings_scrollbar, 'vertical')
                 else:
                     settings_scrollbar.grid_remove()
             except (AttributeError, tk.TclError):
@@ -1019,9 +983,41 @@ class FileRenamerApp:
         self.settings_canvas = settings_canvas
         self.settings_canvas_window = settings_canvas_window
         
-        # Привязка прокрутки колесом мыши
-        self.bind_mousewheel(settings_canvas, settings_canvas)
-        self.bind_mousewheel(scrollable_frame, settings_canvas)
+        # Кастомная функция прокрутки с проверкой необходимости
+        def on_mousewheel_settings(event):
+            """Обработчик прокрутки с проверкой необходимости"""
+            if not _needs_scrolling_settings:
+                return  # Не прокручиваем, если содержимое помещается
+            scroll_amount = int(-1 * (event.delta / 120))
+            settings_canvas.yview_scroll(scroll_amount, "units")
+        
+        def on_mousewheel_linux_settings(event):
+            """Обработчик прокрутки для Linux"""
+            if not _needs_scrolling_settings:
+                return  # Не прокручиваем, если содержимое помещается
+            if event.num == 4:
+                settings_canvas.yview_scroll(-1, "units")
+            elif event.num == 5:
+                settings_canvas.yview_scroll(1, "units")
+        
+        # Привязка прокрутки колесом мыши с проверкой
+        settings_canvas.bind("<MouseWheel>", on_mousewheel_settings)
+        settings_canvas.bind("<Button-4>", on_mousewheel_linux_settings)
+        settings_canvas.bind("<Button-5>", on_mousewheel_linux_settings)
+        
+        # Привязка к дочерним виджетам
+        def bind_to_children_settings(parent):
+            """Рекурсивная привязка прокрутки к дочерним виджетам."""
+            for child in parent.winfo_children():
+                try:
+                    child.bind("<MouseWheel>", on_mousewheel_settings)
+                    child.bind("<Button-4>", on_mousewheel_linux_settings)
+                    child.bind("<Button-5>", on_mousewheel_linux_settings)
+                    bind_to_children_settings(child)
+                except (AttributeError, tk.TclError):
+                    pass
+        
+        bind_to_children_settings(scrollable_frame)
         
         settings_canvas.grid(row=0, column=0, sticky="nsew")
         settings_scrollbar.grid(row=0, column=1, sticky="ns")
@@ -1059,6 +1055,8 @@ class FileRenamerApp:
         
         # === СОЗДАНИЕ ВКЛАДОК НА ГЛАВНОМ ЭКРАНЕ ===
         # Создаем вкладки для логов, о программе и поддержки
+        self._create_main_metadata_removal_tab()
+        self._create_main_file_converter_tab()
         self._create_main_log_tab()
         self._create_main_about_tab()
         self._create_main_support_tab()
@@ -1315,9 +1313,51 @@ class FileRenamerApp:
         self.methods_window_settings_frame = tk.Frame(settings_canvas, 
                                                       bg=self.colors['bg_card'])
         
+        # Флаг для отслеживания, нужна ли прокрутка
+        _needs_scrolling_methods = True
+        
+        def update_methods_scroll_region():
+            """Обновление области прокрутки и видимости скроллбара"""
+            nonlocal _needs_scrolling_methods
+            try:
+                settings_canvas.update_idletasks()
+                bbox = settings_canvas.bbox("all")
+                if bbox:
+                    canvas_height = settings_canvas.winfo_height()
+                    if canvas_height > 1:
+                        # Высота содержимого
+                        content_height = bbox[3] - bbox[1]
+                        # Если содержимое помещается (с небольшим запасом), скрываем скроллбар
+                        if content_height <= canvas_height + 2:  # Небольшой запас для погрешности
+                            # Устанавливаем scrollregion равным видимой области, чтобы запретить прокрутку
+                            settings_canvas.configure(scrollregion=(0, 0, bbox[2], canvas_height))
+                            # Сбрасываем позицию прокрутки в начало
+                            settings_canvas.yview_moveto(0)
+                            _needs_scrolling_methods = False
+                            # Скрываем скроллбар
+                            try:
+                                if settings_scrollbar.winfo_viewable():
+                                    settings_scrollbar.grid_remove()
+                            except (tk.TclError, AttributeError):
+                                pass
+                        else:
+                            # Обновляем scrollregion для прокрутки
+                            settings_canvas.configure(scrollregion=bbox)
+                            _needs_scrolling_methods = True
+                            # Показываем скроллбар, если он был скрыт
+                            try:
+                                if not settings_scrollbar.winfo_viewable():
+                                    settings_scrollbar.grid(row=1, column=1, sticky="ns")
+                            except (tk.TclError, AttributeError):
+                                pass
+                            # Используем универсальную функцию для управления скроллбаром
+                            self.update_scrollbar_visibility(settings_canvas, settings_scrollbar, 'vertical')
+            except (AttributeError, tk.TclError):
+                pass
+        
         self.methods_window_settings_frame.bind(
             "<Configure>",
-            lambda e: settings_canvas.configure(scrollregion=settings_canvas.bbox("all")))
+            lambda e: update_methods_scroll_region())
         
         canvas_win = settings_canvas.create_window((0, 0), 
                                                    window=self.methods_window_settings_frame, 
@@ -1327,28 +1367,65 @@ class FileRenamerApp:
             if event.widget == settings_canvas:
                 try:
                     settings_canvas.itemconfig(canvas_win, width=event.width)
+                    # Обновляем scrollregion и видимость скроллбара
+                    window.after(10, update_methods_scroll_region)
                 except (AttributeError, tk.TclError):
                     pass
         
         settings_canvas.bind('<Configure>', on_canvas_configure)
-        settings_canvas.configure(yscrollcommand=settings_scrollbar.set)
         
-        self.bind_mousewheel(settings_canvas, settings_canvas)
-        self.bind_mousewheel(self.methods_window_settings_frame, settings_canvas)
+        def on_scroll_methods(*args):
+            """Обработчик прокрутки"""
+            settings_scrollbar.set(*args)
+            # Обновляем видимость скроллбара после прокрутки
+            window.after(10, update_methods_scroll_region)
+        
+        settings_canvas.configure(yscrollcommand=on_scroll_methods)
+        
+        # Кастомная функция прокрутки с проверкой необходимости
+        def on_mousewheel_methods(event):
+            """Обработчик прокрутки с проверкой необходимости"""
+            if not _needs_scrolling_methods:
+                return  # Не прокручиваем, если содержимое помещается
+            scroll_amount = int(-1 * (event.delta / 120))
+            settings_canvas.yview_scroll(scroll_amount, "units")
+        
+        def on_mousewheel_linux_methods(event):
+            """Обработчик прокрутки для Linux"""
+            if not _needs_scrolling_methods:
+                return  # Не прокручиваем, если содержимое помещается
+            if event.num == 4:
+                settings_canvas.yview_scroll(-1, "units")
+            elif event.num == 5:
+                settings_canvas.yview_scroll(1, "units")
+        
+        # Привязка прокрутки колесом мыши с проверкой
+        settings_canvas.bind("<MouseWheel>", on_mousewheel_methods)
+        settings_canvas.bind("<Button-4>", on_mousewheel_linux_methods)
+        settings_canvas.bind("<Button-5>", on_mousewheel_linux_methods)
+        
+        # Привязка к дочерним виджетам
+        def bind_to_children_methods(parent):
+            """Рекурсивная привязка прокрутки к дочерним виджетам."""
+            for child in parent.winfo_children():
+                try:
+                    child.bind("<MouseWheel>", on_mousewheel_methods)
+                    child.bind("<Button-4>", on_mousewheel_linux_methods)
+                    child.bind("<Button-5>", on_mousewheel_linux_methods)
+                    bind_to_children_methods(child)
+                except (AttributeError, tk.TclError):
+                    pass
+        
+        bind_to_children_methods(self.methods_window_settings_frame)
         
         settings_canvas.grid(row=1, column=0, sticky="nsew")
         settings_scrollbar.grid(row=1, column=1, sticky="ns")
         
-        # Автоматическое управление видимостью скроллбара для Canvas
-        def update_methods_settings_scrollbar(*args):
-            self.update_scrollbar_visibility(settings_canvas, settings_scrollbar, 'vertical')
+        # Обновляем scrollregion после создания всех элементов
+        def finalize_methods_scroll():
+            update_methods_scroll_region()
         
-        def on_configure(e):
-            window.after_idle(update_methods_settings_scrollbar)
-        
-        self.methods_window_settings_frame.bind('<Configure>', on_configure)
-        settings_canvas.bind('<Configure>', on_configure)
-        window.bind('<Configure>', on_configure)
+        window.after(100, finalize_methods_scroll)
         
         self._on_method_type_selected_in_window()
         
@@ -1779,7 +1856,7 @@ class FileRenamerApp:
     def open_log_window(self):
         """Переключение на вкладку лога операций в главном окне"""
         if hasattr(self, 'main_notebook') and self.main_notebook:
-            self.main_notebook.select(1)  # Индекс 1 - вкладка лога
+            self.main_notebook.select(3)  # Индекс 3 - вкладка лога (после удаления метаданных и конвертации)
     
     def open_settings_window(self):
         """Переключение на вкладку настроек в главном окне (удалено)"""
@@ -1788,12 +1865,12 @@ class FileRenamerApp:
     def open_about_window(self):
         """Переключение на вкладку о программе в главном окне"""
         if hasattr(self, 'main_notebook') and self.main_notebook:
-            self.main_notebook.select(2)  # Индекс 2 - вкладка о программе (после удаления настроек)
+            self.main_notebook.select(4)  # Индекс 4 - вкладка о программе
     
     def open_support_window(self):
         """Переключение на вкладку поддержки в главном окне"""
         if hasattr(self, 'main_notebook') and self.main_notebook:
-            self.main_notebook.select(3)  # Индекс 3 - вкладка поддержки (после удаления настроек)
+            self.main_notebook.select(5)  # Индекс 5 - вкладка поддержки
     
     def _create_main_log_tab(self):
         """Создание вкладки лога операций на главном экране"""
@@ -1807,6 +1884,7 @@ class FileRenamerApp:
         log_controls.grid(row=0, column=0, sticky="ew", padx=20, pady=(20, 10))
         log_controls.columnconfigure(1, weight=1)
         log_controls.columnconfigure(2, weight=1)
+        log_controls.columnconfigure(3, weight=1)
         
         # Заголовок
         log_title = tk.Label(log_controls, text="Лог операций",
@@ -1815,12 +1893,20 @@ class FileRenamerApp:
                             fg=self.colors['text_primary'])
         log_title.grid(row=0, column=0, padx=(0, 12), sticky="w")
         
+        # Кнопка копирования лога
+        btn_copy_log = self.create_rounded_button(
+            log_controls, "Копировать", self.copy_log,
+            self.colors['info'], 'white',
+            font=('Robot', 9, 'bold'), padx=10, pady=6,
+            active_bg=self.colors['info_hover'])
+        btn_copy_log.grid(row=0, column=1, padx=3, sticky="ew")
+        
         btn_clear_log = self.create_rounded_button(
             log_controls, "Очистить лог", self.clear_log,
             self.colors['danger'], 'white',
             font=('Robot', 9, 'bold'), padx=10, pady=6,
             active_bg=self.colors['danger_hover'])
-        btn_clear_log.grid(row=0, column=1, padx=3, sticky="ew")
+        btn_clear_log.grid(row=0, column=2, padx=3, sticky="ew")
         
         # Кнопка выгрузки лога
         btn_save_log = self.create_rounded_button(
@@ -1828,7 +1914,7 @@ class FileRenamerApp:
             self.colors['primary'], 'white',
             font=('Robot', 9, 'bold'), padx=10, pady=6,
             active_bg=self.colors['primary_hover'])
-        btn_save_log.grid(row=0, column=2, padx=3, sticky="ew")
+        btn_save_log.grid(row=0, column=3, padx=3, sticky="ew")
         
         # Лог операций
         log_frame = tk.Frame(log_tab, bg=self.colors['bg_card'])
@@ -1868,8 +1954,517 @@ class FileRenamerApp:
         log_text_widget.bind('<Button-1>', lambda e: self.root.after_idle(update_log_scrollbar))
         log_text_widget.bind('<Configure>', lambda e: self.root.after_idle(update_log_scrollbar))
         
+        # Добавляем контекстное меню для копирования
+        log_context_menu = tk.Menu(log_text_widget, tearoff=0)
+        log_context_menu.add_command(label="Копировать", command=lambda: self._copy_selected_text(log_text_widget))
+        log_context_menu.add_command(label="Копировать всё", command=lambda: self._copy_all_text(log_text_widget))
+        log_context_menu.add_separator()
+        log_context_menu.add_command(label="Выделить всё", command=lambda: self._select_all_text(log_text_widget))
+        
+        def show_context_menu(event):
+            try:
+                log_context_menu.tk_popup(event.x_root, event.y_root)
+            finally:
+                log_context_menu.grab_release()
+        
+        log_text_widget.bind('<Button-3>', show_context_menu)  # Правый клик
+        log_text_widget.bind('<Control-c>', lambda e: self._copy_selected_text(log_text_widget))  # Ctrl+C
+        
         # Сохраняем ссылку на log_text
         self.logger.set_log_widget(log_text_widget)
+    
+    def _create_main_metadata_removal_tab(self):
+        """Создание вкладки удаления метаданных на главном экране"""
+        metadata_tab = tk.Frame(self.main_notebook, bg=self.colors['bg_main'])
+        metadata_tab.columnconfigure(0, weight=1)
+        metadata_tab.rowconfigure(0, weight=1)
+        self.main_notebook.add(metadata_tab, text="Удаление метаданных")
+        
+        # Основной контейнер (как во вкладке "Файлы")
+        main_container = tk.Frame(metadata_tab, bg=self.colors['bg_main'])
+        main_container.grid(row=0, column=0, sticky="nsew")
+        # Левая панель занимает 60%, правая - 40%
+        main_container.columnconfigure(0, weight=6, uniform="panels")
+        main_container.columnconfigure(1, weight=4, uniform="panels")
+        main_container.rowconfigure(0, weight=1)
+        
+        # Левая часть - список файлов (как во вкладке "Файлы")
+        files_count = len(self.metadata_removal_files) if hasattr(self, 'metadata_removal_files') else 0
+        left_panel = ttk.LabelFrame(
+            main_container,
+            text=f"Список файлов (Файлов: {files_count})",
+            style='Card.TLabelframe',
+            padding=6
+        )
+        left_panel.grid(row=0, column=0, sticky="nsew", padx=(0, 2))
+        left_panel.columnconfigure(0, weight=1)
+        left_panel.rowconfigure(1, weight=1)  # Строка с таблицей файлов
+        
+        # Сохраняем ссылку на left_panel для обновления заголовка
+        self.metadata_left_panel = left_panel
+        
+        # Таблица файлов
+        list_frame = ttk.Frame(left_panel)
+        list_frame.pack(fill=tk.BOTH, expand=True)
+        
+        # Создание таблицы с прокруткой
+        scrollbar_y = ttk.Scrollbar(list_frame, orient=tk.VERTICAL)
+        scrollbar_x = ttk.Scrollbar(list_frame, orient=tk.HORIZONTAL)
+        
+        columns = ('file', 'status')
+        tree = ttk.Treeview(
+            list_frame,
+            columns=columns,
+            show="headings",
+            yscrollcommand=scrollbar_y.set,
+            xscrollcommand=scrollbar_x.set,
+            style='Custom.Treeview'
+        )
+        
+        scrollbar_y.config(command=tree.yview)
+        scrollbar_x.config(command=tree.xview)
+        
+        # Настройка колонок
+        tree.heading("file", text="Файл")
+        tree.heading("status", text="Статус")
+        
+        tree.column("file", width=400, anchor='w', minwidth=200)
+        tree.column("status", width=200, anchor='w', minwidth=100)
+        
+        # Размещение таблицы и скроллбаров
+        tree.grid(row=0, column=0, sticky="nsew")
+        scrollbar_y.grid(row=0, column=1, sticky="ns")
+        scrollbar_x.grid(row=1, column=0, sticky="ew")
+        
+        list_frame.columnconfigure(0, weight=1)
+        list_frame.rowconfigure(0, weight=1)
+        
+        # Сохраняем ссылку на tree
+        self.metadata_removal_tree = tree
+        self.metadata_removal_files = []
+        
+        # Привязка прокрутки колесом мыши
+        self.bind_mousewheel(tree, tree)
+        
+        # Прогресс-бар внизу
+        progress_container = tk.Frame(left_panel, bg=self.colors['bg_card'])
+        progress_container.pack(fill=tk.X, pady=(6, 0))
+        progress_container.columnconfigure(1, weight=1)
+        
+        # Название прогресс-бара и прогресс-бар на одной строке
+        progress_title = tk.Label(progress_container, text="Прогресс:",
+                                 font=('Robot', 9, 'bold'),
+                                 bg=self.colors['bg_card'],
+                                 fg=self.colors['text_primary'],
+                                 anchor='w')
+        progress_title.grid(row=0, column=0, padx=(0, 10), sticky="w")
+        
+        self.metadata_progress_bar = ttk.Progressbar(progress_container, mode='determinate')
+        self.metadata_progress_bar.grid(row=0, column=1, sticky="ew", padx=(0, 10))
+        self.metadata_progress_bar['value'] = 0
+        
+        self.metadata_progress_label = tk.Label(progress_container, text="",
+                                                font=('Robot', 8),
+                                                bg=self.colors['bg_card'],
+                                                fg=self.colors['text_secondary'],
+                                                anchor='w')
+        self.metadata_progress_label.grid(row=1, column=0, columnspan=2, sticky="w", pady=(4, 0))
+        
+        # Настройка drag and drop для вкладки удаления метаданных
+        self._setup_metadata_removal_drag_drop(list_frame, tree, metadata_tab)
+        
+        # === ПРАВАЯ ПАНЕЛЬ (опции удаления) ===
+        right_panel = ttk.LabelFrame(main_container, text="Что удалять?", 
+                                     style='Card.TLabelframe', padding=6)
+        right_panel.grid(row=0, column=1, sticky="nsew", padx=(2, 0))
+        right_panel.columnconfigure(0, weight=1)
+        right_panel.rowconfigure(0, weight=1)  # Опции теперь в строке 0
+        
+        # Внутренний Frame для содержимого
+        options_frame = tk.Frame(right_panel, bg=self.colors['bg_card'])
+        options_frame.pack(fill=tk.BOTH, expand=True, padx=6, pady=6)
+        
+        # Переменные для чекбоксов
+        self.metadata_remove_author = tk.BooleanVar(value=True)
+        self.metadata_remove_title = tk.BooleanVar(value=True)
+        self.metadata_remove_subject = tk.BooleanVar(value=True)
+        self.metadata_remove_comments = tk.BooleanVar(value=True)
+        self.metadata_remove_keywords = tk.BooleanVar(value=True)
+        self.metadata_remove_category = tk.BooleanVar(value=True)
+        self.metadata_remove_dates = tk.BooleanVar(value=False)
+        self.metadata_remove_revision = tk.BooleanVar(value=False)
+        self.metadata_remove_last_modified = tk.BooleanVar(value=False)
+        self.metadata_remove_description = tk.BooleanVar(value=True)
+        self.metadata_remove_language = tk.BooleanVar(value=False)
+        self.metadata_remove_identifier = tk.BooleanVar(value=False)
+        self.metadata_remove_rating = tk.BooleanVar(value=False)
+        self.metadata_remove_all = tk.BooleanVar(value=True)
+        
+        # Canvas для прокрутки опций
+        options_canvas = tk.Canvas(options_frame, bg=self.colors['bg_card'], 
+                                   highlightthickness=0)
+        options_scrollbar = ttk.Scrollbar(options_frame, orient="vertical", 
+                                          command=options_canvas.yview)
+        options_scrollable = tk.Frame(options_canvas, bg=self.colors['bg_card'])
+        
+        options_scrollable.bind(
+            "<Configure>",
+            lambda e: options_canvas.configure(scrollregion=options_canvas.bbox("all"))
+        )
+        
+        options_canvas_window = options_canvas.create_window((0, 0), window=options_scrollable, anchor="nw")
+        
+        def on_options_canvas_configure(event):
+            if event.widget == options_canvas:
+                canvas_width = event.width
+                options_canvas.itemconfig(options_canvas_window, width=canvas_width)
+                # Обновляем scrollregion и видимость скроллбара
+                options_canvas.update_idletasks()
+                bbox = options_canvas.bbox("all")
+                if bbox:
+                    options_canvas.configure(scrollregion=bbox)
+                # Проверяем видимость скроллбара после изменения размера
+                self.root.after(10, update_scrollbar_visibility)
+        
+        options_canvas.bind('<Configure>', on_options_canvas_configure)
+        
+        # Флаг для отслеживания, нужна ли прокрутка
+        _needs_scrolling = True
+        
+        def update_scrollbar_visibility():
+            """Обновление видимости скроллбара в зависимости от размера содержимого"""
+            nonlocal _needs_scrolling
+            try:
+                options_canvas.update_idletasks()
+                bbox = options_canvas.bbox("all")
+                if bbox:
+                    canvas_height = options_canvas.winfo_height()
+                    if canvas_height > 1:
+                        # Высота содержимого
+                        content_height = bbox[3] - bbox[1]
+                        # Если содержимое помещается (с небольшим запасом), скрываем скроллбар
+                        if content_height <= canvas_height + 2:  # Небольшой запас для погрешности
+                            # Устанавливаем scrollregion равным видимой области, чтобы запретить прокрутку
+                            options_canvas.configure(scrollregion=(0, 0, bbox[2], canvas_height))
+                            # Сбрасываем позицию прокрутки в начало
+                            options_canvas.yview_moveto(0)
+                            _needs_scrolling = False
+                            # Скрываем скроллбар
+                            try:
+                                if options_scrollbar.winfo_viewable():
+                                    options_scrollbar.pack_forget()
+                            except (tk.TclError, AttributeError):
+                                pass
+                        else:
+                            # Обновляем scrollregion для прокрутки
+                            options_canvas.configure(scrollregion=bbox)
+                            _needs_scrolling = True
+                            # Показываем скроллбар, если он был скрыт
+                            try:
+                                if not options_scrollbar.winfo_viewable():
+                                    options_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+                            except (tk.TclError, AttributeError):
+                                # Если pack не сработал, пробуем grid
+                                try:
+                                    options_scrollbar.grid(row=0, column=1, sticky="ns")
+                                except (tk.TclError, AttributeError):
+                                    pass
+            except (tk.TclError, AttributeError):
+                pass
+        
+        def on_scroll(*args):
+            options_scrollbar.set(*args)
+            # Обновляем видимость скроллбара после прокрутки
+            self.root.after(10, update_scrollbar_visibility)
+        
+        options_canvas.configure(yscrollcommand=on_scroll)
+        
+        options_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        options_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        
+        # Кастомная функция прокрутки с проверкой необходимости
+        def on_mousewheel(event):
+            """Обработчик прокрутки с проверкой необходимости"""
+            if not _needs_scrolling:
+                return  # Не прокручиваем, если содержимое помещается
+            scroll_amount = int(-1 * (event.delta / 120))
+            options_canvas.yview_scroll(scroll_amount, "units")
+        
+        def on_mousewheel_linux(event):
+            """Обработчик прокрутки для Linux"""
+            if not _needs_scrolling:
+                return  # Не прокручиваем, если содержимое помещается
+            if event.num == 4:
+                options_canvas.yview_scroll(-1, "units")
+            elif event.num == 5:
+                options_canvas.yview_scroll(1, "units")
+        
+        # Привязка прокрутки колесом мыши с проверкой
+        options_canvas.bind("<MouseWheel>", on_mousewheel)
+        options_canvas.bind("<Button-4>", on_mousewheel_linux)
+        options_canvas.bind("<Button-5>", on_mousewheel_linux)
+        
+        # Привязка к дочерним виджетам
+        def bind_to_children(parent):
+            """Рекурсивная привязка прокрутки к дочерним виджетам."""
+            for child in parent.winfo_children():
+                try:
+                    child.bind("<MouseWheel>", on_mousewheel)
+                    child.bind("<Button-4>", on_mousewheel_linux)
+                    child.bind("<Button-5>", on_mousewheel_linux)
+                    bind_to_children(child)
+                except (AttributeError, tk.TclError):
+                    pass
+        
+        bind_to_children(options_scrollable)
+        
+        # Чекбоксы
+        tk.Checkbutton(options_scrollable, text="Автор", variable=self.metadata_remove_author,
+                      bg=self.colors['bg_card'], fg=self.colors['text_primary'],
+                      font=('Robot', 9), anchor='w').pack(anchor=tk.W, pady=2, padx=5)
+        tk.Checkbutton(options_scrollable, text="Название", variable=self.metadata_remove_title,
+                      bg=self.colors['bg_card'], fg=self.colors['text_primary'],
+                      font=('Robot', 9), anchor='w').pack(anchor=tk.W, pady=2, padx=5)
+        tk.Checkbutton(options_scrollable, text="Тема", variable=self.metadata_remove_subject,
+                      bg=self.colors['bg_card'], fg=self.colors['text_primary'],
+                      font=('Robot', 9), anchor='w').pack(anchor=tk.W, pady=2, padx=5)
+        tk.Checkbutton(options_scrollable, text="Описание", variable=self.metadata_remove_description,
+                      bg=self.colors['bg_card'], fg=self.colors['text_primary'],
+                      font=('Robot', 9), anchor='w').pack(anchor=tk.W, pady=2, padx=5)
+        tk.Checkbutton(options_scrollable, text="Комментарии", variable=self.metadata_remove_comments,
+                      bg=self.colors['bg_card'], fg=self.colors['text_primary'],
+                      font=('Robot', 9), anchor='w').pack(anchor=tk.W, pady=2, padx=5)
+        tk.Checkbutton(options_scrollable, text="Ключевые слова", variable=self.metadata_remove_keywords,
+                      bg=self.colors['bg_card'], fg=self.colors['text_primary'],
+                      font=('Robot', 9), anchor='w').pack(anchor=tk.W, pady=2, padx=5)
+        tk.Checkbutton(options_scrollable, text="Категория", variable=self.metadata_remove_category,
+                      bg=self.colors['bg_card'], fg=self.colors['text_primary'],
+                      font=('Robot', 9), anchor='w').pack(anchor=tk.W, pady=2, padx=5)
+        tk.Checkbutton(options_scrollable, text="Ревизия", variable=self.metadata_remove_revision,
+                      bg=self.colors['bg_card'], fg=self.colors['text_primary'],
+                      font=('Robot', 9), anchor='w').pack(anchor=tk.W, pady=2, padx=5)
+        tk.Checkbutton(options_scrollable, text="Последний измененный", variable=self.metadata_remove_last_modified,
+                      bg=self.colors['bg_card'], fg=self.colors['text_primary'],
+                      font=('Robot', 9), anchor='w').pack(anchor=tk.W, pady=2, padx=5)
+        tk.Checkbutton(options_scrollable, text="Даты создания/изменения", variable=self.metadata_remove_dates,
+                      bg=self.colors['bg_card'], fg=self.colors['text_primary'],
+                      font=('Robot', 9), anchor='w').pack(anchor=tk.W, pady=2, padx=5)
+        tk.Checkbutton(options_scrollable, text="Язык", variable=self.metadata_remove_language,
+                      bg=self.colors['bg_card'], fg=self.colors['text_primary'],
+                      font=('Robot', 9), anchor='w').pack(anchor=tk.W, pady=2, padx=5)
+        tk.Checkbutton(options_scrollable, text="Идентификатор", variable=self.metadata_remove_identifier,
+                      bg=self.colors['bg_card'], fg=self.colors['text_primary'],
+                      font=('Robot', 9), anchor='w').pack(anchor=tk.W, pady=2, padx=5)
+        tk.Checkbutton(options_scrollable, text="Рейтинг", variable=self.metadata_remove_rating,
+                      bg=self.colors['bg_card'], fg=self.colors['text_primary'],
+                      font=('Robot', 9), anchor='w').pack(anchor=tk.W, pady=2, padx=5)
+        
+        # Разделитель
+        separator = tk.Frame(options_scrollable, height=2, bg=self.colors['border'])
+        separator.pack(fill=tk.X, padx=5, pady=10)
+        
+        tk.Checkbutton(options_scrollable, text="Всё (EXIF/теги)", variable=self.metadata_remove_all,
+                      bg=self.colors['bg_card'], fg=self.colors['text_primary'],
+                      font=('Robot', 9, 'bold'), anchor='w').pack(anchor=tk.W, pady=2, padx=5)
+        
+        # Обновляем scrollregion после создания всех элементов
+        def finalize_scroll():
+            options_canvas.update_idletasks()
+            bbox = options_canvas.bbox("all")
+            if bbox:
+                options_canvas.configure(scrollregion=bbox)
+                # Проверяем видимость скроллбара после небольшой задержки
+                self.root.after(50, update_scrollbar_visibility)
+        
+        self.root.after(100, finalize_scroll)
+        
+        # Разделитель перед кнопками
+        separator_buttons = tk.Frame(right_panel, height=2, bg=self.colors['border'])
+        separator_buttons.pack(fill=tk.X, padx=6, pady=(6, 0))
+        
+        # Кнопки управления в правой панели (внизу)
+        buttons_frame = tk.Frame(right_panel, bg=self.colors['bg_card'])
+        buttons_frame.pack(fill=tk.X, padx=6, pady=(6, 0))
+        
+        btn_add_files = self.create_rounded_button(
+            buttons_frame, "Добавить файлы", self._add_files_for_metadata_removal,
+            self.colors['primary'], 'white', 
+            font=('Robot', 9, 'bold'), padx=10, pady=6,
+            active_bg=self.colors['primary_hover'])
+        btn_add_files.pack(fill=tk.X, pady=(0, 4))
+        
+        btn_remove_selected = self.create_rounded_button(
+            buttons_frame, "Удалить метаданные", self._remove_selected_metadata_files,
+            self.colors['danger'], 'white',
+            font=('Robot', 9, 'bold'), padx=10, pady=6,
+            active_bg=self.colors['danger_hover'])
+        btn_remove_selected.pack(fill=tk.X, pady=(0, 4))
+        
+        btn_clear = self.create_rounded_button(
+            buttons_frame, "Очистить", self._clear_metadata_files_list,
+            self.colors['warning'], 'white',
+            font=('Robot', 9, 'bold'), padx=10, pady=6,
+            active_bg=self.colors['warning_hover'])
+        btn_clear.pack(fill=tk.X)
+    
+    def _create_main_file_converter_tab(self):
+        """Создание вкладки конвертации файлов на главном экране"""
+        converter_tab = tk.Frame(self.main_notebook, bg=self.colors['bg_main'])
+        converter_tab.columnconfigure(0, weight=1)
+        converter_tab.rowconfigure(0, weight=1)
+        self.main_notebook.add(converter_tab, text="Конвертация файлов")
+        
+        # Основной контейнер (как во вкладке "Файлы")
+        main_container = tk.Frame(converter_tab, bg=self.colors['bg_main'])
+        main_container.grid(row=0, column=0, sticky="nsew")
+        # Левая панель занимает 60%, правая - 40%
+        main_container.columnconfigure(0, weight=6, uniform="panels")
+        main_container.columnconfigure(1, weight=4, uniform="panels")
+        main_container.rowconfigure(0, weight=1)
+        
+        # Левая часть - список файлов (как во вкладке "Файлы")
+        files_count = len(self.converter_files) if hasattr(self, 'converter_files') else 0
+        left_panel = ttk.LabelFrame(
+            main_container,
+            text=f"Список файлов (Файлов: {files_count})",
+            style='Card.TLabelframe',
+            padding=6
+        )
+        left_panel.grid(row=0, column=0, sticky="nsew", padx=(0, 2))
+        left_panel.columnconfigure(0, weight=1)
+        left_panel.rowconfigure(1, weight=1)  # Строка с таблицей файлов
+        
+        # Сохраняем ссылку на left_panel для обновления заголовка
+        self.converter_left_panel = left_panel
+        
+        # Таблица файлов
+        list_frame = ttk.Frame(left_panel)
+        list_frame.pack(fill=tk.BOTH, expand=True)
+        
+        # Создание таблицы с прокруткой
+        scrollbar_y = ttk.Scrollbar(list_frame, orient=tk.VERTICAL)
+        scrollbar_x = ttk.Scrollbar(list_frame, orient=tk.HORIZONTAL)
+        
+        columns = ('file', 'status')
+        tree = ttk.Treeview(
+            list_frame,
+            columns=columns,
+            show="headings",
+            yscrollcommand=scrollbar_y.set,
+            xscrollcommand=scrollbar_x.set,
+            style='Custom.Treeview'
+        )
+        
+        scrollbar_y.config(command=tree.yview)
+        scrollbar_x.config(command=tree.xview)
+        
+        # Настройка колонок
+        tree.heading("file", text="Файл")
+        tree.heading("status", text="Статус")
+        
+        tree.column("file", width=400, anchor='w', minwidth=200)
+        tree.column("status", width=100, anchor='w', minwidth=80)
+        
+        # Размещение таблицы и скроллбаров
+        tree.grid(row=0, column=0, sticky="nsew")
+        scrollbar_y.grid(row=0, column=1, sticky="ns")
+        scrollbar_x.grid(row=1, column=0, sticky="ew")
+        
+        list_frame.columnconfigure(0, weight=1)
+        list_frame.rowconfigure(0, weight=1)
+        
+        # Сохраняем ссылку на tree
+        self.converter_tree = tree
+        self.converter_files = []
+        
+        # Привязка обработчика выбора файлов для обновления доступных форматов
+        tree.bind('<<TreeviewSelect>>', lambda e: self._update_available_formats())
+        
+        # Привязка прокрутки колесом мыши
+        self.bind_mousewheel(tree, tree)
+        
+        # Прогресс-бар внизу
+        progress_container = tk.Frame(left_panel, bg=self.colors['bg_card'])
+        progress_container.pack(fill=tk.X, pady=(6, 0))
+        progress_container.columnconfigure(1, weight=1)
+        
+        # Название прогресс-бара и прогресс-бар на одной строке
+        progress_title = tk.Label(progress_container, text="Прогресс:",
+                                 font=('Robot', 9, 'bold'),
+                                 bg=self.colors['bg_card'],
+                                 fg=self.colors['text_primary'],
+                                 anchor='w')
+        progress_title.grid(row=0, column=0, padx=(0, 10), sticky="w")
+        
+        self.converter_progress_bar = ttk.Progressbar(progress_container, mode='determinate')
+        self.converter_progress_bar.grid(row=0, column=1, sticky="ew", padx=(0, 10))
+        self.converter_progress_bar['value'] = 0
+        
+        self.converter_progress_label = tk.Label(progress_container, text="",
+                                                font=('Robot', 8),
+                                                bg=self.colors['bg_card'],
+                                                fg=self.colors['text_secondary'],
+                                                anchor='w')
+        self.converter_progress_label.grid(row=1, column=0, columnspan=2, sticky="w", pady=(4, 0))
+        
+        # Настройка drag and drop для вкладки конвертации
+        self._setup_converter_drag_drop(list_frame, tree, converter_tab)
+        
+        # === ПРАВАЯ ПАНЕЛЬ (настройки конвертации) ===
+        right_panel = ttk.LabelFrame(main_container, text="Настройки конвертации", 
+                                     style='Card.TLabelframe', padding=6)
+        right_panel.grid(row=0, column=1, sticky="nsew", padx=(2, 0))
+        right_panel.columnconfigure(0, weight=1)
+        right_panel.rowconfigure(0, weight=1)  # Настройки теперь в строке 0
+        
+        # Внутренний Frame для содержимого (настройки сверху)
+        settings_frame = tk.Frame(right_panel, bg=self.colors['bg_card'])
+        settings_frame.pack(fill=tk.BOTH, expand=True, padx=6, pady=6)
+        
+        # Выбор формата
+        format_label = tk.Label(settings_frame, text="Целевой формат:",
+                               font=('Robot', 9, 'bold'),
+                               bg=self.colors['bg_card'],
+                               fg=self.colors['text_primary'],
+                               anchor='w')
+        format_label.pack(anchor=tk.W, pady=(0, 6))
+        
+        # Combobox для выбора формата
+        formats = self.file_converter.get_supported_formats()
+        format_var = tk.StringVar(value=formats[0] if formats else '.png')
+        format_combo = ttk.Combobox(settings_frame, textvariable=format_var,
+                                   values=formats, state='readonly', width=15)
+        format_combo.pack(fill=tk.X, pady=(0, 10))
+        self.converter_format_var = format_var
+        
+        # Разделитель перед кнопками
+        separator_buttons = tk.Frame(right_panel, height=2, bg=self.colors['border'])
+        separator_buttons.pack(fill=tk.X, padx=6, pady=(6, 0))
+        
+        # Кнопки управления в правой панели (внизу)
+        buttons_frame = tk.Frame(right_panel, bg=self.colors['bg_card'])
+        buttons_frame.pack(fill=tk.X, padx=6, pady=(6, 0))
+        
+        btn_add_files = self.create_rounded_button(
+            buttons_frame, "Добавить файлы", self._add_files_for_conversion,
+            self.colors['primary'], 'white', 
+            font=('Robot', 9, 'bold'), padx=10, pady=6,
+            active_bg=self.colors['primary_hover'])
+        btn_add_files.pack(fill=tk.X, pady=(0, 4))
+        
+        btn_convert = self.create_rounded_button(
+            buttons_frame, "Конвертировать", self._convert_files,
+            self.colors['success'], 'white',
+            font=('Robot', 9, 'bold'), padx=10, pady=6,
+            active_bg=self.colors['success_hover'])
+        btn_convert.pack(fill=tk.X, pady=(0, 4))
+        
+        btn_clear = self.create_rounded_button(
+            buttons_frame, "Очистить", self._clear_converter_files_list,
+            self.colors['warning'], 'white',
+            font=('Robot', 9, 'bold'), padx=10, pady=6,
+            active_bg=self.colors['warning_hover'])
+        btn_clear.pack(fill=tk.X)
     
     def _create_main_about_tab(self):
         """Создание вкладки о программе на главном экране"""
@@ -1949,7 +2544,7 @@ class FileRenamerApp:
                 image_label.image = photo
                 image_label.pack()
         except Exception as e:
-            print(f"Ошибка загрузки изображения: {e}")
+            logger.debug(f"Ошибка загрузки изображения: {e}")
         
         # Описание программы справа от изображения
         desc_frame = tk.Frame(about_content_frame, bg=self.colors['bg_card'])
@@ -2054,7 +2649,7 @@ class FileRenamerApp:
                 vk_icon_label.image = vk_photo
                 vk_icon_label.pack(side=tk.LEFT, padx=(0, 4))
         except Exception as e:
-            print(f"Ошибка загрузки иконки VK: {e}")
+            logger.debug(f"Ошибка загрузки иконки VK: {e}")
         
         vk_label = tk.Label(vk_frame, 
                            text="ВКонтакте",
@@ -2084,7 +2679,7 @@ class FileRenamerApp:
                 tg_icon_label.image = tg_photo
                 tg_icon_label.pack(side=tk.LEFT, padx=(0, 4))
         except Exception as e:
-            print(f"Ошибка загрузки иконки Telegram: {e}")
+            logger.debug(f"Ошибка загрузки иконки Telegram: {e}")
         
         tg_label = tk.Label(tg_frame, 
                            text="Telegram",
@@ -2119,7 +2714,7 @@ class FileRenamerApp:
                 github_icon_label.image = github_photo
                 github_icon_label.pack(side=tk.LEFT, padx=(0, 4))
         except Exception as e:
-            print(f"Ошибка загрузки иконки GitHub: {e}")
+            logger.debug(f"Ошибка загрузки иконки GitHub: {e}")
         
         github_label = tk.Label(github_frame, 
                                text="GitHub",
@@ -2233,6 +2828,638 @@ class FileRenamerApp:
         donation_label.pack(anchor=tk.W, pady=(8, 0))
         donation_label.bind("<Button-1>", open_donation)
     
+    def _add_files_for_metadata_removal(self):
+        """Добавление файлов для удаления метаданных"""
+        files = filedialog.askopenfilenames(
+            title="Выберите файлы для удаления метаданных",
+            filetypes=[
+                ("Все файлы", "*.*"),
+                ("Изображения", "*.jpg *.jpeg *.png *.bmp *.tiff *.tif *.webp *.gif *.ico *.jfif *.jp2 *.jpx *.j2k *.j2c *.pcx *.ppm *.pgm *.pbm *.pnm *.psd *.xbm *.xpm *.svg"),
+                ("Аудио", "*.mp3 *.flac *.ogg *.m4a *.aac *.wma *.wav *.mp4 *.m4p *.aiff *.au *.ra *.amr *.3gp *.opus *.ape *.mpc *.tta *.wv *.dsf *.dff *.mka *.mkv"),
+                ("Видео", "*.mp4 *.avi *.mov *.mkv *.wmv *.flv *.webm *.m4v *.3gp"),
+                ("Документы", "*.pdf *.doc *.docx *.xls *.xlsx *.ppt *.pptx *.odt *.ods *.odp"),
+            ]
+        )
+        if files:
+            for file_path in files:
+                if not hasattr(self, 'metadata_removal_files'):
+                    self.metadata_removal_files = []
+                # Проверяем, что файл еще не добавлен
+                normalized_path = os.path.normpath(os.path.abspath(file_path))
+                if any(os.path.normpath(os.path.abspath(f.get('path', ''))) == normalized_path 
+                       for f in self.metadata_removal_files):
+                    continue
+                
+                file_data = {
+                    'path': file_path,
+                    'status': 'Готов'
+                }
+                self.metadata_removal_files.append(file_data)
+                
+                # Добавляем в treeview
+                file_name = os.path.basename(file_path)
+                can_remove = self.metadata_remover.can_remove_metadata(file_path)
+                status = 'Готов' if can_remove else 'Формат не поддерживается'
+                self.metadata_removal_tree.insert("", tk.END, values=(file_name, status))
+            
+            # Обновляем заголовок панели
+            if hasattr(self, 'metadata_left_panel'):
+                count = len(self.metadata_removal_files)
+                self.metadata_left_panel.config(text=f"Список файлов (Файлов: {count})")
+            self.log(f"Добавлено файлов для удаления метаданных: {len(files)}")
+    
+    def _remove_selected_metadata_files(self):
+        """Удаление метаданных из выбранных файлов"""
+        # Защита от повторных вызовов
+        if hasattr(self, '_removing_metadata') and self._removing_metadata:
+            return
+        
+        if not hasattr(self, 'metadata_removal_files') or not self.metadata_removal_files:
+            messagebox.showwarning("Предупреждение", "Список файлов пуст")
+            return
+        
+        selected_items = self.metadata_removal_tree.selection()
+        if not selected_items:
+            # Если ничего не выбрано, обрабатываем все файлы
+            if not messagebox.askyesno("Подтверждение", 
+                                      f"Удалить метаданные из всех {len(self.metadata_removal_files)} файл(ов)?"):
+                return
+            selected_items = self.metadata_removal_tree.get_children()
+        else:
+            # Подтверждение для выбранных файлов
+            if not messagebox.askyesno("Подтверждение", 
+                                       f"Удалить метаданные из {len(selected_items)} файл(ов)?"):
+                return
+        
+        # Получаем выбранные опции удаления
+        remove_options = {
+            'author': self.metadata_remove_author.get(),
+            'title': self.metadata_remove_title.get(),
+            'subject': self.metadata_remove_subject.get(),
+            'description': self.metadata_remove_description.get(),
+            'comments': self.metadata_remove_comments.get(),
+            'keywords': self.metadata_remove_keywords.get(),
+            'category': self.metadata_remove_category.get(),
+            'revision': self.metadata_remove_revision.get(),
+            'last_modified': self.metadata_remove_last_modified.get(),
+            'dates': self.metadata_remove_dates.get(),
+            'language': self.metadata_remove_language.get(),
+            'identifier': self.metadata_remove_identifier.get(),
+            'rating': self.metadata_remove_rating.get(),
+            'all': self.metadata_remove_all.get()  # Если выбрано "Всё", игнорируем остальные
+        }
+        
+        # Если выбрано "Всё", удаляем все метаданные
+        if remove_options['all']:
+            remove_options = {k: True for k in remove_options.keys()}
+        
+        # Устанавливаем флаг обработки
+        self._removing_metadata = True
+        
+        # Инициализируем прогресс-бар
+        total_files = len(selected_items)
+        self.root.after(0, lambda: self.metadata_progress_bar.config(maximum=total_files, value=0))
+        self.root.after(0, lambda: self.metadata_progress_label.config(text=f"Обработка файлов: 0 / {total_files}"))
+        
+        # Обрабатываем файлы в отдельном потоке
+        def process_files():
+            success_count = 0
+            error_count = 0
+            processed = 0
+            
+            for item in selected_items:
+                index = self.metadata_removal_tree.index(item)
+                if 0 <= index < len(self.metadata_removal_files):
+                    file_data = self.metadata_removal_files[index]
+                    file_path = file_data['path']
+                    
+                    # Обновляем прогресс
+                    processed += 1
+                    file_name = os.path.basename(file_path)
+                    self.root.after(0, lambda p=processed, t=total_files, fn=file_name: 
+                                   self._update_metadata_progress(p, t, fn))
+                    
+                    success, message = self.metadata_remover.remove_metadata(
+                        file_path, 
+                        create_backup=True,
+                        remove_options=remove_options
+                    )
+                    
+                    # Обновляем статус в UI (используем значения по умолчанию для правильного захвата)
+                    self.root.after(0, lambda idx=index, s=success, m=message: 
+                                   self._update_metadata_removal_status(idx, s, m))
+                    
+                    if success:
+                        success_count += 1
+                        self.log(f"Метаданные удалены: {file_name}")
+                    else:
+                        error_count += 1
+                        self.log(f"Ошибка при удалении метаданных из {file_name}: {message}")
+            
+            # Сбрасываем прогресс-бар
+            self.root.after(0, lambda: self.metadata_progress_bar.config(value=0))
+            self.root.after(0, lambda: self.metadata_progress_label.config(text=""))
+            
+            # Показываем результат только один раз (используем значения по умолчанию)
+            if success_count + error_count > 0:
+                # Очищаем список файлов после успешного удаления
+                def show_result_and_clear():
+                    # Проверяем, не было ли уже показано сообщение
+                    if not hasattr(self, '_metadata_result_shown'):
+                        self._metadata_result_shown = True
+                        messagebox.showinfo(
+                            "Результат",
+                            f"Обработано файлов: {success_count + error_count}\n"
+                            f"Успешно: {success_count}\n"
+                            f"Ошибок: {error_count}"
+                        )
+                        # Очищаем список после показа результата
+                        if hasattr(self, 'metadata_removal_tree'):
+                            self.metadata_removal_tree.delete(*self.metadata_removal_tree.get_children())
+                            self.metadata_removal_files = []
+                            # Обновляем заголовок панели
+                            if hasattr(self, 'metadata_left_panel'):
+                                self.metadata_left_panel.config(text=f"Список файлов (Файлов: 0)")
+                        # Сбрасываем флаг обработки
+                        self._removing_metadata = False
+                        # Сбрасываем флаг показа сообщения
+                        self.root.after(100, lambda: setattr(self, '_metadata_result_shown', False))
+                
+                self.root.after(0, show_result_and_clear)
+        
+        thread = threading.Thread(target=process_files, daemon=True)
+        thread.start()
+    
+    def _update_metadata_progress(self, current: int, total: int, filename: str):
+        """Обновление прогресс-бара удаления метаданных"""
+        try:
+            self.metadata_progress_bar['value'] = current
+            self.metadata_progress_label.config(text=f"Обработка: {current} / {total} - {filename[:50]}")
+        except Exception:
+            pass
+    
+    def _update_metadata_removal_status(self, index: int, success: bool, message: str):
+        """Обновление статуса файла в списке удаления метаданных"""
+        if not hasattr(self, 'metadata_removal_tree'):
+            return
+        
+        items = self.metadata_removal_tree.get_children()
+        if 0 <= index < len(items):
+            item = items[index]
+            status = "Успешно" if success else f"Ошибка: {message[:30]}"
+            current_values = self.metadata_removal_tree.item(item, 'values')
+            self.metadata_removal_tree.item(item, values=(current_values[0], status))
+    
+    def _clear_metadata_files_list(self):
+        """Очистка списка файлов для удаления метаданных"""
+        if not hasattr(self, 'metadata_removal_tree'):
+            return
+        
+        if messagebox.askyesno("Подтверждение", "Очистить список файлов?"):
+            self.metadata_removal_tree.delete(*self.metadata_removal_tree.get_children())
+            self.metadata_removal_files = []
+            # Обновляем заголовок панели
+            if hasattr(self, 'metadata_left_panel'):
+                self.metadata_left_panel.config(text=f"Список файлов (Файлов: 0)")
+            self.log("Список файлов для удаления метаданных очищен")
+    
+    def _add_files_for_conversion(self):
+        """Добавление файлов для конвертации"""
+        files = filedialog.askopenfilenames(
+            title="Выберите файлы для конвертации",
+            filetypes=[
+                ("Изображения", "*.jpg *.jpeg *.png *.bmp *.tiff *.tif *.webp *.gif *.ico *.jfif *.jp2 *.jpx *.j2k *.j2c *.pcx *.ppm *.pgm *.pbm *.pnm *.psd *.xbm *.xpm *.heic *.heif *.avif"),
+                ("Все файлы", "*.*")
+            ]
+        )
+        if files:
+            for file_path in files:
+                if not hasattr(self, 'converter_files'):
+                    self.converter_files = []
+                # Проверяем, что файл еще не добавлен
+                normalized_path = os.path.normpath(os.path.abspath(file_path))
+                if any(os.path.normpath(os.path.abspath(f.get('path', ''))) == normalized_path 
+                       for f in self.converter_files):
+                    continue
+                
+                ext = os.path.splitext(file_path)[1].lower()
+                
+                # Определяем доступные форматы конвертации
+                available_formats = []
+                all_formats = self.file_converter.get_supported_formats()
+                for target_format in all_formats:
+                    if self.file_converter.can_convert(file_path, target_format):
+                        available_formats.append(target_format)
+                
+                # Формируем строку с доступными форматами
+                if available_formats:
+                    formats_str = ", ".join(available_formats[:5])  # Показываем первые 5 форматов
+                    if len(available_formats) > 5:
+                        formats_str += f" (+{len(available_formats) - 5})"
+                else:
+                    formats_str = "Не поддерживается"
+                
+                file_data = {
+                    'path': file_path,
+                    'format': ext,
+                    'status': 'Готов',
+                    'available_formats': available_formats  # Сохраняем список форматов, а не строку
+                }
+                self.converter_files.append(file_data)
+                
+                # Добавляем в treeview
+                file_name = os.path.basename(file_path)
+                self.converter_tree.insert("", tk.END, values=(file_name, 'Готов'))
+            
+            # Обновляем заголовок панели
+            if hasattr(self, 'converter_left_panel'):
+                count = len(self.converter_files)
+                self.converter_left_panel.config(text=f"Список файлов (Файлов: {count})")
+            # Обновляем доступные форматы в combobox
+            self._update_available_formats()
+            self.log(f"Добавлено файлов для конвертации: {len(files)}")
+    
+    def _update_available_formats(self):
+        """Обновление списка доступных форматов в combobox на основе выбранных файлов"""
+        if not hasattr(self, 'converter_format_combo') or not self.converter_format_combo:
+            return
+        
+        # Получаем выбранные файлы или все файлы, если ничего не выбрано
+        selected_items = self.converter_tree.selection()
+        if selected_items:
+            # Если есть выбранные файлы, используем их
+            indices = [self.converter_tree.index(item) for item in selected_items]
+            files_to_check = [self.converter_files[i] for i in indices if 0 <= i < len(self.converter_files)]
+        else:
+            # Если ничего не выбрано, используем все файлы
+            files_to_check = self.converter_files
+        
+        if not files_to_check:
+            # Если нет файлов, показываем все форматы
+            all_formats = self.file_converter.get_supported_formats()
+            self.converter_format_combo['values'] = all_formats
+            if all_formats and not self.converter_format_var.get() in all_formats:
+                self.converter_format_var.set(all_formats[0] if all_formats else '')
+            return
+        
+        # Находим общие форматы для всех выбранных файлов
+        common_formats = None
+        for file_data in files_to_check:
+            available_formats = file_data.get('available_formats', [])
+            if isinstance(available_formats, str):
+                # Если это строка (старый формат), пропускаем
+                continue
+            if common_formats is None:
+                common_formats = set(available_formats)
+            else:
+                common_formats = common_formats.intersection(set(available_formats))
+        
+        # Преобразуем в отсортированный список
+        if common_formats:
+            common_formats_list = sorted(list(common_formats))
+            self.converter_format_combo['values'] = common_formats_list
+            # Если текущий формат не в списке, выбираем первый доступный
+            if not self.converter_format_var.get() in common_formats_list:
+                self.converter_format_var.set(common_formats_list[0] if common_formats_list else '')
+        else:
+            # Если нет общих форматов, показываем все форматы
+            all_formats = self.file_converter.get_supported_formats()
+            self.converter_format_combo['values'] = all_formats
+            if all_formats and not self.converter_format_var.get() in all_formats:
+                self.converter_format_var.set(all_formats[0] if all_formats else '')
+    
+    def _convert_files(self):
+        """Конвертация выбранных файлов"""
+        if not hasattr(self, 'converter_files') or not self.converter_files:
+            messagebox.showwarning("Предупреждение", "Список файлов пуст")
+            return
+        
+        target_format = self.converter_format_var.get()
+        if not target_format:
+            messagebox.showwarning("Предупреждение", "Выберите целевой формат")
+            return
+        
+        selected_items = self.converter_tree.selection()
+        files_to_convert = self.converter_files
+        
+        # Если ничего не выбрано, конвертируем все
+        if not selected_items:
+            if not messagebox.askyesno("Подтверждение", 
+                                      f"Конвертировать все {len(files_to_convert)} файл(ов) в {target_format}?"):
+                return
+        else:
+            if not messagebox.askyesno("Подтверждение", 
+                                      f"Конвертировать {len(selected_items)} файл(ов) в {target_format}?"):
+                return
+            # Фильтруем только выбранные файлы
+            indices = [self.converter_tree.index(item) for item in selected_items]
+            files_to_convert = [self.converter_files[i] for i in indices if 0 <= i < len(self.converter_files)]
+        
+        # Инициализируем прогресс-бар
+        total_files = len(files_to_convert)
+        self.root.after(0, lambda: self.converter_progress_bar.config(maximum=total_files, value=0))
+        self.root.after(0, lambda: self.converter_progress_label.config(text=f"Обработка файлов: 0 / {total_files}"))
+        
+        # Обрабатываем файлы в отдельном потоке
+        def process_files():
+            success_count = 0
+            error_count = 0
+            processed = 0
+            
+            for file_data in files_to_convert:
+                file_path = file_data['path']
+                
+                # Обновляем прогресс
+                processed += 1
+                file_name = os.path.basename(file_path)
+                self.root.after(0, lambda p=processed, t=total_files, fn=file_name: 
+                               self._update_converter_progress(p, t, fn))
+                
+                success, message, output_path = self.file_converter.convert(
+                    file_path, target_format, create_backup=True
+                )
+                
+                # Находим индекс файла
+                try:
+                    index = self.converter_files.index(file_data)
+                except ValueError:
+                    index = -1
+                
+                # Обновляем статус в UI
+                if index >= 0:
+                    self.root.after(0, lambda idx=index, s=success, m=message, op=output_path: 
+                                   self._update_converter_status(idx, s, m, op))
+                
+                if success:
+                    success_count += 1
+                    self.log(f"Файл конвертирован: {os.path.basename(file_path)} -> {os.path.basename(output_path) if output_path else 'N/A'}")
+                else:
+                    error_count += 1
+                    self.log(f"Ошибка при конвертации {os.path.basename(file_path)}: {message}")
+            
+            # Сбрасываем прогресс-бар
+            self.root.after(0, lambda: self.converter_progress_bar.config(value=0))
+            self.root.after(0, lambda: self.converter_progress_label.config(text=""))
+            
+            # Показываем результат только один раз (используем значения по умолчанию)
+            if success_count + error_count > 0:
+                def show_converter_result():
+                    # Проверяем, не было ли уже показано сообщение
+                    if not hasattr(self, '_converter_result_shown'):
+                        self._converter_result_shown = True
+                        messagebox.showinfo(
+                            "Результат",
+                            f"Обработано файлов: {success_count + error_count}\n"
+                            f"Успешно: {success_count}\n"
+                            f"Ошибок: {error_count}"
+                        )
+                        # Сбрасываем флаг показа сообщения
+                        self.root.after(100, lambda: setattr(self, '_converter_result_shown', False))
+                
+                self.root.after(0, show_converter_result)
+        
+        thread = threading.Thread(target=process_files, daemon=True)
+        thread.start()
+    
+    def _update_converter_progress(self, current: int, total: int, filename: str):
+        """Обновление прогресс-бара конвертации"""
+        try:
+            self.converter_progress_bar['value'] = current
+            self.converter_progress_label.config(text=f"Обработка: {current} / {total} - {filename[:50]}")
+        except Exception:
+            pass
+    
+    def _update_converter_status(self, index: int, success: bool, message: str, output_path: Optional[str]):
+        """Обновление статуса файла в списке конвертации"""
+        if not hasattr(self, 'converter_tree'):
+            return
+        
+        items = self.converter_tree.get_children()
+        if 0 <= index < len(items):
+            item = items[index]
+            status = "Успешно" if success else f"Ошибка: {message[:30]}"
+            current_values = self.converter_tree.item(item, 'values')
+            self.converter_tree.item(item, values=(current_values[0], status))
+    
+    def _clear_converter_files_list(self):
+        """Очистка списка файлов для конвертации"""
+        if not hasattr(self, 'converter_tree'):
+            return
+        
+        if messagebox.askyesno("Подтверждение", "Очистить список файлов?"):
+            self.converter_tree.delete(*self.converter_tree.get_children())
+            self.converter_files = []
+            # Обновляем заголовок панели
+            if hasattr(self, 'converter_left_panel'):
+                self.converter_left_panel.config(text=f"Список файлов (Файлов: 0)")
+            self.log("Список файлов для конвертации очищен")
+    
+    def _setup_metadata_removal_drag_drop(self, list_frame, tree, tab_frame):
+        """Настройка drag and drop для вкладки удаления метаданных"""
+        if not HAS_TKINTERDND2:
+            return
+        
+        try:
+            # Регистрируем фрейм списка файлов
+            if hasattr(list_frame, 'drop_target_register'):
+                list_frame.drop_target_register(DND_FILES)
+                list_frame.dnd_bind('<<Drop>>', lambda e: self._on_drop_metadata_files(e))
+            
+            # Регистрируем treeview
+            if hasattr(tree, 'drop_target_register'):
+                tree.drop_target_register(DND_FILES)
+                tree.dnd_bind('<<Drop>>', lambda e: self._on_drop_metadata_files(e))
+            
+            # Регистрируем всю вкладку
+            if hasattr(tab_frame, 'drop_target_register'):
+                tab_frame.drop_target_register(DND_FILES)
+                tab_frame.dnd_bind('<<Drop>>', lambda e: self._on_drop_metadata_files(e))
+        except Exception as e:
+            logger.debug(f"Не удалось настроить drag and drop для вкладки удаления метаданных: {e}")
+    
+    def _setup_converter_drag_drop(self, list_frame, tree, tab_frame):
+        """Настройка drag and drop для вкладки конвертации"""
+        if not HAS_TKINTERDND2:
+            return
+        
+        try:
+            # Регистрируем фрейм списка файлов
+            if hasattr(list_frame, 'drop_target_register'):
+                list_frame.drop_target_register(DND_FILES)
+                list_frame.dnd_bind('<<Drop>>', lambda e: self._on_drop_converter_files(e))
+            
+            # Регистрируем treeview
+            if hasattr(tree, 'drop_target_register'):
+                tree.drop_target_register(DND_FILES)
+                tree.dnd_bind('<<Drop>>', lambda e: self._on_drop_converter_files(e))
+            
+            # Регистрируем всю вкладку
+            if hasattr(tab_frame, 'drop_target_register'):
+                tab_frame.drop_target_register(DND_FILES)
+                tab_frame.dnd_bind('<<Drop>>', lambda e: self._on_drop_converter_files(e))
+        except Exception as e:
+            logger.debug(f"Не удалось настроить drag and drop для вкладки конвертации: {e}")
+    
+    def _on_drop_metadata_files(self, event):
+        """Обработка перетаскивания файлов на вкладку удаления метаданных"""
+        try:
+            data = event.data
+            if not data:
+                return
+            
+            # Используем ту же логику парсинга, что и в основном окне
+            import re
+            file_paths = []
+            
+            # Метод 1: Ищем пути в фигурных скобках
+            pattern = r'\{([^}]+)\}'
+            matches = re.findall(pattern, data)
+            
+            if matches:
+                file_paths = [match.strip() for match in matches if match.strip()]
+            else:
+                # Метод 2: Пробуем как один путь
+                data_clean = data.strip().strip('"').strip("'")
+                if data_clean and os.path.exists(data_clean):
+                    file_paths = [data_clean]
+            
+            # Обрабатываем файлы
+            added_count = 0
+            for file_path in file_paths:
+                file_path = file_path.strip('{}').strip('"').strip("'").strip()
+                if not file_path:
+                    continue
+                
+                try:
+                    if not os.path.isabs(file_path):
+                        file_path = os.path.abspath(file_path)
+                    else:
+                        file_path = os.path.normpath(file_path)
+                except Exception:
+                    continue
+                
+                if not os.path.exists(file_path) or not os.path.isfile(file_path):
+                    continue
+                
+                # Проверяем, что файл еще не добавлен
+                normalized_path = os.path.normpath(os.path.abspath(file_path))
+                if any(os.path.normpath(os.path.abspath(f.get('path', ''))) == normalized_path 
+                       for f in self.metadata_removal_files):
+                    continue
+                
+                file_data = {
+                    'path': file_path,
+                    'status': 'Готов'
+                }
+                self.metadata_removal_files.append(file_data)
+                
+                # Добавляем в treeview
+                file_name = os.path.basename(file_path)
+                can_remove = self.metadata_remover.can_remove_metadata(file_path)
+                status = 'Готов' if can_remove else 'Формат не поддерживается'
+                self.metadata_removal_tree.insert("", tk.END, values=(file_name, status))
+                added_count += 1
+            
+            if added_count > 0:
+                # Обновляем заголовок панели
+                if hasattr(self, 'metadata_left_panel'):
+                    count = len(self.metadata_removal_files)
+                    self.metadata_left_panel.config(text=f"Список файлов (Файлов: {count})")
+                self.log(f"✅ Добавлено файлов для удаления метаданных перетаскиванием: {added_count}")
+        except Exception as e:
+            logger.error(f"Ошибка при обработке перетаскивания файлов для удаления метаданных: {e}", exc_info=True)
+    
+    def _on_drop_converter_files(self, event):
+        """Обработка перетаскивания файлов на вкладку конвертации"""
+        try:
+            data = event.data
+            if not data:
+                return
+            
+            # Используем ту же логику парсинга, что и в основном окне
+            import re
+            file_paths = []
+            
+            # Метод 1: Ищем пути в фигурных скобках
+            pattern = r'\{([^}]+)\}'
+            matches = re.findall(pattern, data)
+            
+            if matches:
+                file_paths = [match.strip() for match in matches if match.strip()]
+            else:
+                # Метод 2: Пробуем как один путь
+                data_clean = data.strip().strip('"').strip("'")
+                if data_clean and os.path.exists(data_clean):
+                    file_paths = [data_clean]
+            
+            # Обрабатываем файлы
+            added_count = 0
+            for file_path in file_paths:
+                file_path = file_path.strip('{}').strip('"').strip("'").strip()
+                if not file_path:
+                    continue
+                
+                try:
+                    if not os.path.isabs(file_path):
+                        file_path = os.path.abspath(file_path)
+                    else:
+                        file_path = os.path.normpath(file_path)
+                except Exception:
+                    continue
+                
+                if not os.path.exists(file_path) or not os.path.isfile(file_path):
+                    continue
+                
+                # Проверяем, что файл еще не добавлен
+                normalized_path = os.path.normpath(os.path.abspath(file_path))
+                if any(os.path.normpath(os.path.abspath(f.get('path', ''))) == normalized_path 
+                       for f in self.converter_files):
+                    continue
+                
+                ext = os.path.splitext(file_path)[1].lower()
+                
+                # Определяем доступные форматы конвертации
+                available_formats = []
+                all_formats = self.file_converter.get_supported_formats()
+                for target_format in all_formats:
+                    if self.file_converter.can_convert(file_path, target_format):
+                        available_formats.append(target_format)
+                
+                # Формируем строку с доступными форматами
+                if available_formats:
+                    formats_str = ", ".join(available_formats[:5])  # Показываем первые 5 форматов
+                    if len(available_formats) > 5:
+                        formats_str += f" (+{len(available_formats) - 5})"
+                else:
+                    formats_str = "Не поддерживается"
+                
+                file_data = {
+                    'path': file_path,
+                    'format': ext,
+                    'status': 'Готов',
+                    'available_formats': available_formats  # Сохраняем список форматов, а не строку
+                }
+                self.converter_files.append(file_data)
+                
+                # Добавляем в treeview
+                file_name = os.path.basename(file_path)
+                self.converter_tree.insert("", tk.END, values=(file_name, 'Готов'))
+            
+                added_count += 1
+            
+            if added_count > 0:
+                # Обновляем доступные форматы в combobox
+                self._update_available_formats()
+            
+            if added_count > 0:
+                # Обновляем заголовок панели
+                if hasattr(self, 'converter_left_panel'):
+                    count = len(self.converter_files)
+                    self.converter_left_panel.config(text=f"Список файлов (Файлов: {count})")
+                self.log(f"✅ Добавлено файлов для конвертации перетаскиванием: {added_count}")
+        except Exception as e:
+            logger.error(f"Ошибка при обработке перетаскивания файлов для конвертации: {e}", exc_info=True)
+    
     def _create_log_tab(self, notebook):
         """Создание вкладки лога операций"""
         # Фрейм для вкладки лога
@@ -2246,6 +3473,7 @@ class FileRenamerApp:
         log_controls.grid(row=0, column=0, sticky="ew", padx=20, pady=(20, 10))
         log_controls.columnconfigure(1, weight=1)
         log_controls.columnconfigure(2, weight=1)
+        log_controls.columnconfigure(3, weight=1)
         
         # Заголовок
         log_title = tk.Label(log_controls, text="Лог операций",
@@ -2254,12 +3482,20 @@ class FileRenamerApp:
                                   fg=self.colors['text_primary'])
         log_title.grid(row=0, column=0, padx=(0, 12), sticky="w")
         
+        # Кнопка копирования лога
+        btn_copy_log = self.create_rounded_button(
+            log_controls, "Копировать", self.copy_log,
+            self.colors['info'], 'white',
+            font=('Robot', 9, 'bold'), padx=10, pady=6,
+            active_bg=self.colors['info_hover'])
+        btn_copy_log.grid(row=0, column=1, padx=3, sticky="ew")
+        
         btn_clear_log = self.create_rounded_button(
             log_controls, "Очистить лог", self.clear_log,
             self.colors['danger'], 'white',
             font=('Robot', 9, 'bold'), padx=10, pady=6,
             active_bg=self.colors['danger_hover'])
-        btn_clear_log.grid(row=0, column=1, padx=3, sticky="ew")
+        btn_clear_log.grid(row=0, column=2, padx=3, sticky="ew")
         
         # Кнопка выгрузки лога
         btn_save_log = self.create_rounded_button(
@@ -2267,7 +3503,7 @@ class FileRenamerApp:
             self.colors['primary'], 'white',
             font=('Robot', 9, 'bold'), padx=10, pady=6,
             active_bg=self.colors['primary_hover'])
-        btn_save_log.grid(row=0, column=2, padx=3, sticky="ew")
+        btn_save_log.grid(row=0, column=3, padx=3, sticky="ew")
         
         # Лог операций
         log_frame = tk.Frame(log_tab, bg=self.colors['bg_card'])
@@ -2299,6 +3535,22 @@ class FileRenamerApp:
         
         # Привязка прокрутки колесиком мыши
         self.bind_mousewheel(log_text_widget, log_text_widget)
+        
+        # Добавляем контекстное меню для копирования
+        log_context_menu = tk.Menu(log_text_widget, tearoff=0)
+        log_context_menu.add_command(label="Копировать", command=lambda: self._copy_selected_text(log_text_widget))
+        log_context_menu.add_command(label="Копировать всё", command=lambda: self._copy_all_text(log_text_widget))
+        log_context_menu.add_separator()
+        log_context_menu.add_command(label="Выделить всё", command=lambda: self._select_all_text(log_text_widget))
+        
+        def show_context_menu(event):
+            try:
+                log_context_menu.tk_popup(event.x_root, event.y_root)
+            finally:
+                log_context_menu.grab_release()
+        
+        log_text_widget.bind('<Button-3>', show_context_menu)  # Правый клик
+        log_text_widget.bind('<Control-c>', lambda e: self._copy_selected_text(log_text_widget))  # Ctrl+C
         
         # Сохраняем ссылку на log_text
         self.logger.set_log_widget(log_text_widget)
@@ -2623,7 +3875,7 @@ class FileRenamerApp:
                 icon_label.image = photo  # Сохраняем ссылку
                 icon_label.pack(pady=(10, 20))
         except Exception as e:
-            print(f"Ошибка загрузки иконки: {e}")  # Отладочная информация
+            logger.debug(f"Ошибка загрузки иконки: {e}")
         
         # Описание программы - карточка
         about_card = ttk.LabelFrame(content_frame, text="О программе", 
@@ -2954,13 +4206,9 @@ class FileRenamerApp:
     
     def _on_drop_files(self, event):
         """Обработка события перетаскивания файлов"""
-        # Сразу выводим в консоль для отладки
-        # print("=== DRAG AND DROP EVENT TRIGGERED ===")
-        
         try:
             # Получаем данные из события
             data = event.data
-            # print(f"Event data received: {type(data)}, length: {len(data) if data else 0}")
             
             # tkinterdnd2 на Windows возвращает файлы в формате: {file1} {file2} {file3}
             # Где каждый файл заключен в фигурные скобки
@@ -3081,10 +4329,9 @@ class FileRenamerApp:
                 self.log("Не найдено файлов для добавления. Проверьте пути в логе выше.")
                 
         except Exception as e:
-            import traceback
             error_msg = str(e)
             self.log(f"❌ Ошибка при обработке перетащенных файлов: {error_msg}")
-            print(f"Ошибка drag and drop:\n{traceback.format_exc()}")
+            logger.error(f"Ошибка drag and drop: {error_msg}", exc_info=True)
     
     def _process_dropped_files(self, files):
         """Обработка перетащенных файлов"""
@@ -3102,8 +4349,12 @@ class FileRenamerApp:
                 skipped += 1
                 self.log(f"Пропущен (не файл): {file_path}")
         
-        # Обновляем интерфейс после добавления всех файлов
-        self.refresh_treeview()
+        # Применяем методы (включая шаблон), если они есть
+        if self.methods_manager.get_methods():
+            self.apply_methods()
+        else:
+            # Обновляем интерфейс после добавления всех файлов
+            self.refresh_treeview()
         self.update_status()
         
         # Подсчитываем реальное количество добавленных файлов
@@ -3287,7 +4538,6 @@ class FileRenamerApp:
             self.tree.insert("", tk.END, values=(
                 old_name,
                 new_name,
-                extension,
                 file_data.get('path', ''),
                 status
             ), tags=tags)
@@ -3300,6 +4550,66 @@ class FileRenamerApp:
     def log(self, message: str):
         """Добавление сообщения в лог"""
         self.logger.log(message)
+    
+    def copy_log(self):
+        """Копирование всего лога в буфер обмена"""
+        if self.logger.log_text is None:
+            messagebox.showwarning("Предупреждение", "Окно лога не открыто.")
+            return
+        
+        try:
+            log_content = self.logger.log_text.get(1.0, tk.END)
+            if not log_content.strip():
+                messagebox.showwarning("Предупреждение", "Лог пуст, нечего копировать.")
+                return
+            
+            # Копируем в буфер обмена
+            self.root.clipboard_clear()
+            self.root.clipboard_append(log_content.strip())
+            self.root.update()  # Обновляем буфер обмена
+            
+            # Показываем сообщение (без логирования, чтобы не дублировать)
+            messagebox.showinfo("Успех", "Лог успешно скопирован в буфер обмена")
+        except Exception as e:
+            logger.error(f"Не удалось скопировать лог: {e}", exc_info=True)
+            messagebox.showerror("Ошибка", f"Не удалось скопировать лог:\n{str(e)}")
+    
+    def _copy_selected_text(self, text_widget):
+        """Копирование выделенного текста в буфер обмена"""
+        try:
+            if text_widget.tag_ranges(tk.SEL):
+                # Есть выделенный текст
+                selected_text = text_widget.get(tk.SEL_FIRST, tk.SEL_LAST)
+                self.root.clipboard_clear()
+                self.root.clipboard_append(selected_text)
+                self.root.update()
+            else:
+                # Нет выделенного текста, копируем всё
+                self._copy_all_text(text_widget)
+        except Exception as e:
+            logger.debug(f"Ошибка при копировании текста: {e}")
+    
+    def _copy_all_text(self, text_widget):
+        """Копирование всего текста в буфер обмена"""
+        try:
+            all_text = text_widget.get(1.0, tk.END)
+            if all_text.strip():
+                self.root.clipboard_clear()
+                self.root.clipboard_append(all_text.strip())
+                self.root.update()
+                # Не логируем, чтобы не дублировать сообщения
+                messagebox.showinfo("Успех", "Весь лог скопирован в буфер обмена")
+        except Exception as e:
+            logger.debug(f"Ошибка при копировании всего текста: {e}")
+    
+    def _select_all_text(self, text_widget):
+        """Выделение всего текста"""
+        try:
+            text_widget.tag_add(tk.SEL, "1.0", tk.END)
+            text_widget.mark_set(tk.INSERT, "1.0")
+            text_widget.see(tk.INSERT)
+        except Exception as e:
+            logger.debug(f"Ошибка при выделении текста: {e}")
     
     def clear_log(self):
         """Очистка лога операций"""
@@ -3316,8 +4626,12 @@ class FileRenamerApp:
             files_before = len(self.files)
             for file_path in files:
                 self.add_file(file_path)
-            # Обновляем интерфейс
-            self.refresh_treeview()
+            # Применяем методы (включая шаблон), если они есть
+            if self.methods_manager.get_methods():
+                self.apply_methods()
+            else:
+                # Обновляем интерфейс
+                self.refresh_treeview()
             self.update_status()
             actual_count = len(self.files) - files_before
             self.log(f"Добавлено файлов: {actual_count}")
@@ -3332,6 +4646,12 @@ class FileRenamerApp:
                     file_path = os.path.join(root, file)
                     self.add_file(file_path)
                     count += 1
+            # Применяем методы (включая шаблон), если они есть
+            if self.methods_manager.get_methods():
+                self.apply_methods()
+            else:
+                # Обновляем интерфейс
+                self.refresh_treeview()
             self.update_status()
             self.log(f"Добавлено файлов из папки: {count}")
     
@@ -3583,7 +4903,6 @@ class FileRenamerApp:
                         writer.writerow([
                             file_data.get('old_name', ''),
                             file_data.get('new_name', ''),
-                            file_data.get('extension', ''),
                             file_data.get('path', ''),
                             file_data.get('status', 'Готов')
                         ])
@@ -3663,7 +4982,12 @@ class FileRenamerApp:
                     if not is_duplicate:
                         self.files.append(file_data)
                 
-                self.refresh_treeview()
+                # Применяем методы (включая шаблон), если они есть
+                if self.methods_manager.get_methods():
+                    self.apply_methods()
+                else:
+                    # Обновляем интерфейс
+                    self.refresh_treeview()
                 self.update_status()
                 messagebox.showinfo("Успех", f"Импортировано файлов: {len(imported_files)}")
                 self.log(f"Импортировано файлов: {len(imported_files)}")
@@ -3918,9 +5242,9 @@ class FileRenamerApp:
                 var_frame.pack(anchor=tk.W, pady=2, padx=8, fill=tk.X)
             
             # Кликабельная метка с переменной
-            var_label = tk.Label(var_frame, text=f"  {var}", 
-                               font=('Courier New', 11, 'bold'), 
-                               foreground=self.colors['primary'], 
+            var_label = tk.Label(var_frame, text=f"{var} ",
+                               font=('Courier New', 11, 'bold'),
+                               foreground=self.colors['primary'],
                                cursor="hand2",
                                bg=self.colors['bg_secondary'])
             var_label.pack(side=tk.LEFT)
@@ -3940,11 +5264,11 @@ class FileRenamerApp:
             var_label.bind("<Leave>", on_leave)
             
             # Описание
-            desc_label = tk.Label(var_frame, text=f"- {desc}", 
+            desc_label = tk.Label(var_frame, text=f"- {desc}",
                                  font=('Robot', 10),
                                  foreground=self.colors['text_secondary'],
                                  bg=self.colors['bg_secondary'])
-            desc_label.pack(side=tk.LEFT, padx=(10, 0))
+            desc_label.pack(side=tk.LEFT)
     
     def insert_variable(self, variable: str):
         """Вставка переменной в поле шаблона"""
@@ -4686,6 +6010,7 @@ class FileRenamerApp:
             file_data['status'] = status
             
             # Обновление в таблице
+            item = None
             try:
                 children = self.tree.get_children()
                 if i < len(children):
@@ -4693,20 +6018,19 @@ class FileRenamerApp:
                     self.tree.item(item, values=(
                         file_data.get('old_name', ''),
                         new_name,
-                        extension,
                         file_data.get('path', ''),
                         status
                     ))
                 else:
                     # Если индекс не совпадает, ищем элемент по старому имени
-                    for item in children:
-                        item_values = self.tree.item(item, 'values')
+                    for child_item in children:
+                        item_values = self.tree.item(child_item, 'values')
                         old_name = file_data.get('old_name', '')
                         if len(item_values) > 0 and item_values[0] == old_name:
+                            item = child_item
                             self.tree.item(item, values=(
                                 file_data.get('old_name', ''),
                                 new_name,
-                                extension,
                                 file_data.get('path', ''),
                                 status
                             ))
@@ -4714,25 +6038,75 @@ class FileRenamerApp:
             except Exception as e:
                 # Если не удалось обновить элемент, обновляем всю таблицу
                 self.refresh_treeview()
+                item = None
             
-            # Цветовое выделение в зависимости от статуса
-            if status == "Готов":
-                self.tree.item(item, tags=('ready',))
-            elif "Ошибка" in status or "Конфликт" in status:
-                tag = 'error' if "Ошибка" in status else 'conflict'
-                self.tree.item(item, tags=(tag,))
-            else:
-                self.tree.item(item, tags=('error',))
+            # Цветовое выделение в зависимости от статуса (только если элемент найден)
+            if item is not None:
+                try:
+                    if status == "Готов":
+                        self.tree.item(item, tags=('ready',))
+                    elif "Ошибка" in status or "Конфликт" in status:
+                        tag = 'error' if "Ошибка" in status else 'conflict'
+                        self.tree.item(item, tags=(tag,))
+                    else:
+                        self.tree.item(item, tags=('error',))
+                except Exception:
+                    # Игнорируем ошибки при установке тегов
+                    pass
         
         # Проверка на конфликты
         check_conflicts(self.files)
+        
+        # Обновляем таблицу, чтобы убедиться, что все файлы (включая новые) отображаются
+        # Это особенно важно для новых файлов, которые еще не отображены в таблице
+        self.refresh_treeview()
+        
         self.log(f"Методы применены к {len(self.files)} файлам")
     
+    def validate_all_files(self):
+        """Валидация всех готовых файлов перед переименованием.
+        
+        Returns:
+            Tuple[bool, List[str]]: (is_valid, errors) - валидны ли все файлы и список ошибок
+        """
+        errors = []
+        ready_files = [f for f in self.files if f.get('status') == 'Готов']
+        
+        for i, file_data in enumerate(ready_files):
+            new_name = file_data.get('new_name', '')
+            extension = file_data.get('extension', '')
+            file_path = file_data.get('path') or file_data.get('full_path', '')
+            
+            # Валидация имени файла
+            status = validate_filename(new_name, extension, file_path, i)
+            if status != 'Готов':
+                errors.append(f"{os.path.basename(file_path)}: {status}")
+        
+        # Проверка на конфликты имен
+        name_counts = {}
+        for file_data in ready_files:
+            full_name = file_data.get('new_name', '') + file_data.get('extension', '')
+            if full_name not in name_counts:
+                name_counts[full_name] = []
+            name_counts[full_name].append(file_data)
+        
+        for full_name, file_list in name_counts.items():
+            if len(file_list) > 1:
+                file_paths = [os.path.basename(f.get('path') or f.get('full_path', '')) for f in file_list]
+                errors.append(f"Конфликт: {len(file_list)} файла с именем '{full_name}': {', '.join(file_paths[:3])}")
+        
+        return len(errors) == 0, errors
     
     def start_rename(self):
         """Начало процесса переименования"""
+        # Защита от повторного вызова (если метод уже выполняется, игнорируем новый вызов)
+        if hasattr(self, '_renaming_in_progress') and self._renaming_in_progress:
+            return
+        self._renaming_in_progress = True
+        
         if not self.files:
             messagebox.showwarning("Предупреждение", "Нет файлов для переименования")
+            self._renaming_in_progress = False
             return
         
         # Подсчет готовых файлов
@@ -4743,24 +6117,28 @@ class FileRenamerApp:
                 "Предупреждение",
                 "Нет файлов готовых к переименованию"
             )
+            self._renaming_in_progress = False
             return
         
         # Валидация всех файлов перед переименованием
         is_valid, errors = self.validate_all_files()
+        
+        # Формируем сообщение подтверждения
+        confirm_msg = f"Вы собираетесь переименовать {len(ready_files)} файлов."
+        
         if not is_valid:
             error_msg = "Обнаружены ошибки валидации:\n\n" + "\n".join(errors[:10])
             if len(errors) > 10:
                 error_msg += f"\n... и еще {len(errors) - 10} ошибок"
-            
-            if not messagebox.askyesno(
-                "Ошибки валидации",
-                f"{error_msg}\n\nПродолжить переименование несмотря на ошибки?"
-            ):
-                return
+            confirm_msg = f"{error_msg}\n\n{confirm_msg}\n\nПродолжить переименование несмотря на ошибки?"
+            title = "Ошибки валидации"
+        else:
+            confirm_msg += "\n\nВыполнить?"
+            title = "Подтверждение"
         
-        # Подтверждение
-        if not messagebox.askyesno("Подтверждение", 
-                                   f"Вы собираетесь переименовать {len(ready_files)} файлов. Выполнить?"):
+        # Единое подтверждение
+        if not messagebox.askyesno(title, confirm_msg):
+            self._renaming_in_progress = False
             return
         
         # Сохранение состояния для отмены
@@ -5009,6 +6387,10 @@ class FileRenamerApp:
             error: Количество ошибок
             renamed_files: Список переименованных файлов
         """
+        # Сбрасываем флаг выполнения переименования
+        if hasattr(self, '_renaming_in_progress'):
+            self._renaming_in_progress = False
+        
         # Добавляем операцию в историю
         if self.history_manager:
             try:
@@ -5050,7 +6432,12 @@ class FileRenamerApp:
             except Exception as e:
                 logger.debug(f"Не удалось показать уведомление: {e}")
         
-        messagebox.showinfo("Завершено", f"Переименование завершено.\nУспешно: {success}\nОшибок: {error}")
+        # Защита от дублирования сообщения
+        if not hasattr(self, '_rename_complete_shown'):
+            self._rename_complete_shown = True
+            messagebox.showinfo("Завершено", f"Переименование завершено.\nУспешно: {success}\nОшибок: {error}")
+            # Сбрасываем флаг после небольшой задержки
+            self.root.after(100, lambda: setattr(self, '_rename_complete_shown', False))
         self.progress['value'] = 0
         # Синхронизация прогресс-бара в окне действий, если оно открыто
         if hasattr(self, 'progress_window') and self.progress_window is not None:
@@ -5071,10 +6458,9 @@ class FileRenamerApp:
         
         for file_data in self.files:
             self.tree.insert("", tk.END, values=(
-                        file_data.get('old_name', ''),
-                        file_data.get('new_name', ''),
-                        file_data.get('extension', ''),
-                        file_data.get('path', ''),
+                file_data.get('old_name', ''),
+                file_data.get('new_name', ''),
+                file_data.get('path', ''),
                 file_data['status']
             ))
         

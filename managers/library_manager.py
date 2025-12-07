@@ -105,7 +105,7 @@ class LibraryManager:
                         f"Библиотеки {', '.join(missing_libraries)} были установлены ранее.\n"
                         f"Пожалуйста, перезапустите программу для их загрузки."
                     )
-                except:
+                except (tk.TclError, RuntimeError):
                     pass
         except Exception as e:
             self.log(f"Ошибка при проверке библиотек: {str(e)}")

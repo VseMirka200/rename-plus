@@ -19,11 +19,15 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Установка кодировки UTF-8 для корректного отображения русских символов
+# В Python 3 кодировка по умолчанию уже UTF-8, поэтому setdefaultencoding не нужен
+# Если нужна настройка для вывода в консоль Windows:
 if sys.platform == 'win32':
     try:
-        # Пытаемся установить UTF-8 кодировку
-        if hasattr(sys, 'setdefaultencoding'):
-            sys.setdefaultencoding('utf-8')
+        # Настройка кодировки для stdout/stderr в Windows
+        if sys.stdout.encoding != 'utf-8':
+            import io
+            sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+            sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
     except Exception as e:
         logger.debug(f"Не удалось установить кодировку: {e}")
 

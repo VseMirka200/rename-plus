@@ -6,6 +6,7 @@ import logging
 import os
 import sys
 from pathlib import Path
+from typing import Any, Dict, List
 
 # Настройка логирования
 logging.basicConfig(level=logging.WARNING)
@@ -29,7 +30,7 @@ except ImportError:
     logger.error("Не удалось импортировать основные модули")
 
 
-def rename_files_cli(files: list, methods: list, dry_run: bool = False) -> dict:
+def rename_files_cli(files: List[str], methods: List[object], dry_run: bool = False) -> Dict[str, Any]:
     """Переименование файлов через CLI.
     
     Args:
@@ -50,10 +51,20 @@ def rename_files_cli(files: list, methods: list, dry_run: bool = False) -> dict:
         'errors_list': []
     }
     
-    metadata_extractor = MetadataExtractor()
+    # Создаем MetadataExtractor только если он нужен (для методов, использующих метаданные)
+    metadata_extractor = None
+    needs_metadata = any(isinstance(m, (MetadataMethod, NewNameMethod)) for m in methods)
+    if needs_metadata:
+        metadata_extractor = MetadataExtractor()
     
     for file_path in files:
-        if not os.path.exists(file_path) or not os.path.isfile(file_path):
+        # Оптимизированная проверка файла (одна операция вместо двух)
+        try:
+            if not os.path.isfile(file_path):
+                results['errors'] += 1
+                results['errors_list'].append(f"Файл не найден: {file_path}")
+                continue
+        except (OSError, ValueError):
             results['errors'] += 1
             results['errors_list'].append(f"Файл не найден: {file_path}")
             continue
