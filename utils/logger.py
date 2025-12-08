@@ -39,16 +39,34 @@ class Logger:
         log_message = f"[{timestamp}] {message}\n"
         
         # Выводим в консоль для отладки (только в режиме отладки)
-        if logger.isEnabledFor(logging.DEBUG):
+        if module_logger.isEnabledFor(logging.DEBUG):
             print(log_message.strip())
         
         # Добавляем в лог, если виджет доступен
         if self.log_text is not None:
             try:
+                # Используем after для безопасного обновления из других потоков
+                if hasattr(self.log_text, 'after'):
+                    self.log_text.after(0, lambda: self._insert_log_message(log_message))
+                else:
+                    self._insert_log_message(log_message)
+            except (tk.TclError, AttributeError):
+                # Окно было закрыто или виджет недоступен
+                self.log_text = None
+    
+    def _insert_log_message(self, log_message: str) -> None:
+        """Вставка сообщения в виджет лога (вызывается из главного потока)"""
+        if self.log_text is not None:
+            try:
+                # Проверяем, что виджет еще существует
+                if not self.log_text.winfo_exists():
+                    self.log_text = None
+                    return
+                
                 self.log_text.insert(tk.END, log_message)
                 self.log_text.see(tk.END)
-            except tk.TclError:
-                # Окно было закрыто
+            except (tk.TclError, AttributeError, RuntimeError):
+                # Окно было закрыто или виджет недоступен
                 self.log_text = None
     
     def clear(self) -> None:

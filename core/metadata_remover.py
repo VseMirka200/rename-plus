@@ -131,6 +131,55 @@ class MetadataRemover:
         
         return False
     
+    def get_available_metadata_fields(self, file_path: str) -> List[str]:
+        """Получение списка доступных метаданных для файла.
+        
+        Args:
+            file_path: Путь к файлу
+            
+        Returns:
+            Список доступных полей метаданных
+        """
+        if not os.path.exists(file_path):
+            return []
+        
+        ext = os.path.splitext(file_path)[1].lower()
+        
+        # Для изображений доступны только EXIF данные (удаляются все сразу)
+        image_extensions = {
+            '.jpg', '.jpeg', '.png', '.bmp', '.tiff', '.tif', '.webp', '.gif',
+            '.ico', '.jfif', '.jp2', '.jpx', '.j2k', '.j2c', '.pcx', '.ppm', 
+            '.pgm', '.pbm', '.pnm', '.psd', '.xbm', '.xpm'
+        }
+        if ext in image_extensions and self.pillow_available:
+            return ['exif']  # Для изображений удаляются все EXIF данные
+        
+        # Для аудио доступны все теги (удаляются все сразу)
+        audio_extensions = {
+            '.mp3', '.flac', '.ogg', '.m4a', '.aac', '.wma', '.wav',
+            '.mp4', '.m4p', '.aiff', '.au', '.ra', '.amr', '.3gp', '.opus',
+            '.ape', '.mpc', '.tta', '.wv', '.dsf', '.dff', '.mka', '.mkv'
+        }
+        if ext in audio_extensions and self.mutagen_available:
+            return ['tags']  # Для аудио удаляются все теги
+        
+        # Для документов доступны различные поля
+        if ext == '.docx' and self.docx_available:
+            return ['author', 'title', 'subject', 'description', 'comments', 'keywords', 
+                   'category', 'revision', 'last_modified', 'created', 'modified', 
+                   'language', 'identifier', 'content_status']
+        elif ext == '.pdf' and self.pdf_available:
+            return ['all']  # Для PDF удаляются все метаданные
+        elif ext == '.xlsx' and self.xlsx_available:
+            return ['author', 'title', 'subject', 'description', 'comments', 'keywords', 
+                   'category', 'last_modified', 'created', 'modified', 'language', 
+                   'content_status', 'version']
+        elif ext == '.pptx' and self.pptx_available:
+            return ['author', 'title', 'subject', 'comments', 'keywords', 'category', 
+                   'last_modified', 'created', 'modified', 'language', 'content_status']
+        
+        return []
+    
     def remove_metadata(self, file_path: str, create_backup: bool = True, 
                        remove_options: Optional[dict] = None) -> Tuple[bool, str]:
         """Удаление метаданных из файла.

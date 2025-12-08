@@ -114,9 +114,14 @@ class UIComponents:
         # Флаг для предотвращения бесконечных вызовов
         canvas._drawing = False
         canvas._pending_draw = None
+        canvas._click_processing = False  # Флаг для предотвращения двойных кликов
         
         # Определяем обработчики событий сначала
         def on_click(e=None):
+            # Защита от двойных кликов
+            if canvas._click_processing:
+                return
+            canvas._click_processing = True
             try:
                 # Проверяем, что команда существует и вызываем её
                 if hasattr(canvas, 'btn_command') and canvas.btn_command:
@@ -148,6 +153,9 @@ class UIComponents:
                     mb.showerror("Ошибка", f"Ошибка при выполнении команды кнопки:\n{ex}")
                 except Exception:
                     pass
+            finally:
+                # Сбрасываем флаг после небольшой задержки (300мс)
+                canvas.after(300, lambda: setattr(canvas, '_click_processing', False))
         
         def on_enter(e):
             if canvas.btn_state != 'active':
@@ -235,6 +243,11 @@ class UIComponents:
                 # Привязываем события клика к элементам через тег
                 # Это важно, чтобы клики на текст и фигуры тоже обрабатывались
                 # Используем только Button-1, чтобы избежать двойных вызовов
+                # Убираем старые привязки перед добавлением новых
+                try:
+                    canvas.tag_unbind(tag, '<Button-1>')
+                except:
+                    pass
                 try:
                     canvas.tag_bind(tag, '<Button-1>', on_click)
                 except Exception:
@@ -244,6 +257,11 @@ class UIComponents:
         
         # Привязка событий мыши к canvas
         # Важно: привязываем только к canvas, чтобы избежать двойных вызовов
+        # Убираем старую привязку перед добавлением новой
+        try:
+            canvas.unbind('<Button-1>')
+        except:
+            pass
         canvas.bind('<Button-1>', on_click)
         canvas.bind('<Enter>', on_enter)
         canvas.bind('<Leave>', on_leave)

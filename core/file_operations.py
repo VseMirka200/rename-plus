@@ -4,7 +4,7 @@ import logging
 import os
 import threading
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Set
+from typing import Any, Callable, Dict, List, Optional, Set
 
 # Настройка логирования
 logger = logging.getLogger(__name__)
@@ -19,18 +19,26 @@ except ImportError:
 # Кэш для нормализованных путей (для оптимизации проверки дубликатов)
 _path_cache: Set[str] = set()
 
-# Кэш зарезервированных имен Windows (вычисляется один раз)
-_RESERVED_NAMES = frozenset(
-    ['CON', 'PRN', 'AUX', 'NUL'] +
-    [f'COM{i}' for i in range(1, 10)] +
-    [f'LPT{i}' for i in range(1, 10)]
-)
+# Импортируем константы из config
+try:
+    from config.constants import INVALID_FILENAME_CHARS, WINDOWS_RESERVED_NAMES
+    _RESERVED_NAMES = WINDOWS_RESERVED_NAMES
+    _INVALID_CHARS = INVALID_FILENAME_CHARS
+except ImportError:
+    # Fallback если константы недоступны
+    _RESERVED_NAMES = frozenset(
+        ['CON', 'PRN', 'AUX', 'NUL'] +
+        [f'COM{i}' for i in range(1, 10)] +
+        [f'LPT{i}' for i in range(1, 10)]
+    )
+    _INVALID_CHARS = frozenset(['<', '>', ':', '"', '/', '\\', '|', '?', '*'])
 
-# Кэш запрещенных символов (вычисляется один раз)
-_INVALID_CHARS = frozenset(['<', '>', ':', '"', '/', '\\', '|', '?', '*'])
 
-
-def add_file_to_list(file_path: str, files_list: List[Dict], path_cache: Optional[Set[str]] = None) -> Optional[Dict]:
+def add_file_to_list(
+    file_path: str,
+    files_list: List[Dict[str, Any]],
+    path_cache: Optional[Set[str]] = None
+) -> Optional[Dict[str, Any]]:
     """Добавление файла в список для переименования.
     
     Args:
@@ -118,7 +126,7 @@ def validate_filename(name: str, extension: str, path: str, index: int) -> str:
     return "Готов"
 
 
-def check_conflicts(files_list: List[Dict]) -> None:
+def check_conflicts(files_list: List[Dict[str, Any]]) -> None:
     """Проверка конфликтов имен файлов.
     
     Args:
