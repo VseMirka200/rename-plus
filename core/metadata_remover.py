@@ -1,8 +1,9 @@
 """Модуль для удаления метаданных из файлов.
 
 Поддерживает удаление метаданных из:
-- Изображений (через Pillow)
-- Аудио файлов (через mutagen)
+- Изображений (через Pillow): JPG, PNG, BMP, TIFF, WEBP, GIF, ICO, HEIC, HEIF, AVIF, RAW форматы и др.
+- Аудио файлов (через mutagen): MP3, FLAC, OGG, M4A, AAC, WMA, WAV, OPUS и др.
+- Видео файлов (через mutagen): MP4, AVI, MOV, MKV, WMV, FLV, WEBM, MPG, MPEG и др.
 - Документов DOCX (через python-docx)
 - PDF файлов (через PyPDF2/pypdf)
 - XLSX файлов (через openpyxl)
@@ -98,22 +99,21 @@ class MetadataRemover:
         
         ext = os.path.splitext(file_path)[1].lower()
         
-        # Поддерживаемые форматы изображений (SVG исключен, так как Pillow не поддерживает его напрямую)
+        # Поддерживаемые форматы изображений (только популярные)
         image_extensions = {
-            '.jpg', '.jpeg', '.png', '.bmp', '.tiff', '.tif', '.webp', '.gif',
-            '.ico', '.jfif', '.jp2', '.jpx', '.j2k', '.j2c', '.pcx', '.ppm', 
-            '.pgm', '.pbm', '.pnm', '.psd', '.xbm', '.xpm'
+            '.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp', '.tiff', '.tif',
+            '.ico', '.heic', '.heif', '.avif', '.dng', '.cr2', '.nef', '.raw'
         }
         if ext in image_extensions and self.pillow_available:
             return True
         
-        # Поддерживаемые форматы аудио
-        audio_extensions = {
-            '.mp3', '.flac', '.ogg', '.m4a', '.aac', '.wma', '.wav',
-            '.mp4', '.m4p', '.aiff', '.au', '.ra', '.amr', '.3gp', '.opus',
-            '.ape', '.mpc', '.tta', '.wv', '.dsf', '.dff', '.mka', '.mkv'
+        # Поддерживаемые форматы аудио и видео (только популярные, mutagen поддерживает оба)
+        audio_video_extensions = {
+            '.mp3', '.wav', '.flac', '.aac', '.ogg', '.m4a', '.wma', '.opus',
+            '.mp4', '.avi', '.mkv', '.mov', '.wmv', '.flv', '.webm', '.m4v',
+            '.mpg', '.mpeg', '.3gp'
         }
-        if ext in audio_extensions and self.mutagen_available:
+        if ext in audio_video_extensions and self.mutagen_available:
             return True
         
         # Поддерживаемые форматы документов
@@ -124,7 +124,11 @@ class MetadataRemover:
             '.pptx': self.pptx_available,
             '.doc': False,  # Старый формат, сложнее обрабатывать
             '.xls': False,  # Старый формат
-            '.ppt': False   # Старый формат
+            '.ppt': False,  # Старый формат
+            '.odt': False,  # OpenDocument Text (требует дополнительной библиотеки)
+            '.ods': False,  # OpenDocument Spreadsheet (требует дополнительной библиотеки)
+            '.odp': False,  # OpenDocument Presentation (требует дополнительной библиотеки)
+            '.rtf': False   # Rich Text Format (требует дополнительной библиотеки)
         }
         if ext in document_extensions:
             return document_extensions[ext]
@@ -145,23 +149,22 @@ class MetadataRemover:
         
         ext = os.path.splitext(file_path)[1].lower()
         
-        # Для изображений доступны только EXIF данные (удаляются все сразу)
+        # Для изображений доступны только EXIF данные (удаляются все сразу, только популярные форматы)
         image_extensions = {
-            '.jpg', '.jpeg', '.png', '.bmp', '.tiff', '.tif', '.webp', '.gif',
-            '.ico', '.jfif', '.jp2', '.jpx', '.j2k', '.j2c', '.pcx', '.ppm', 
-            '.pgm', '.pbm', '.pnm', '.psd', '.xbm', '.xpm'
+            '.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp', '.tiff', '.tif',
+            '.ico', '.heic', '.heif', '.avif', '.dng', '.cr2', '.nef', '.raw'
         }
         if ext in image_extensions and self.pillow_available:
             return ['exif']  # Для изображений удаляются все EXIF данные
         
-        # Для аудио доступны все теги (удаляются все сразу)
-        audio_extensions = {
-            '.mp3', '.flac', '.ogg', '.m4a', '.aac', '.wma', '.wav',
-            '.mp4', '.m4p', '.aiff', '.au', '.ra', '.amr', '.3gp', '.opus',
-            '.ape', '.mpc', '.tta', '.wv', '.dsf', '.dff', '.mka', '.mkv'
+        # Для аудио и видео доступны все теги (удаляются все сразу, только популярные форматы)
+        audio_video_extensions = {
+            '.mp3', '.wav', '.flac', '.aac', '.ogg', '.m4a', '.wma', '.opus',
+            '.mp4', '.avi', '.mkv', '.mov', '.wmv', '.flv', '.webm', '.m4v',
+            '.mpg', '.mpeg', '.3gp'
         }
-        if ext in audio_extensions and self.mutagen_available:
-            return ['tags']  # Для аудио удаляются все теги
+        if ext in audio_video_extensions and self.mutagen_available:
+            return ['tags']  # Для аудио и видео удаляются все теги
         
         # Для документов доступны различные поля
         if ext == '.docx' and self.docx_available:
@@ -214,22 +217,24 @@ class MetadataRemover:
                 logger.warning(f"Не удалось создать резервную копию: {e}")
         
         try:
-            # Удаление метаданных из изображений
+            # Удаление метаданных из изображений (только популярные форматы)
             image_extensions = {
-                '.jpg', '.jpeg', '.png', '.bmp', '.tiff', '.tif', '.webp', '.gif',
-                '.ico', '.jfif', '.jp2', '.jpx', '.j2k', '.j2c', '.pcx', '.ppm', 
-                '.pgm', '.pbm', '.pnm', '.psd', '.xbm', '.xpm'
+                '.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp', '.tiff', '.tif',
+                '.ico', '.heic', '.heif', '.avif', '.dng', '.cr2', '.nef', '.raw'
             }
             if ext in image_extensions and self.pillow_available:
                 return self._remove_image_metadata(file_path, backup_path, remove_options)
             
-            # Удаление метаданных из аудио
-            audio_extensions = {
+            # Удаление метаданных из аудио и видео
+            audio_video_extensions = {
                 '.mp3', '.flac', '.ogg', '.m4a', '.aac', '.wma', '.wav',
                 '.mp4', '.m4p', '.aiff', '.au', '.ra', '.amr', '.3gp', '.opus',
-                '.ape', '.mpc', '.tta', '.wv', '.dsf', '.dff', '.mka', '.mkv'
+                '.ape', '.mpc', '.tta', '.wv', '.dsf', '.dff', '.mka', '.mkv',
+                '.avi', '.mov', '.wmv', '.flv', '.webm', '.m4v', '.mpg', '.mpeg',
+                '.m2v', '.divx', '.xvid', '.rm', '.rmvb', '.vob', '.asf', '.3g2',
+                '.f4v', '.ogv', '.ts', '.mts', '.m2ts', '.qt', '.yuv', '.dav'
             }
-            if ext in audio_extensions and self.mutagen_available:
+            if ext in audio_video_extensions and self.mutagen_available:
                 return self._remove_audio_metadata(file_path, backup_path, remove_options)
             
             # Удаление метаданных из документов
@@ -311,12 +316,12 @@ class MetadataRemover:
     
     def _remove_audio_metadata(self, file_path: str, backup_path: Optional[str],
                                remove_options: Optional[dict] = None) -> Tuple[bool, str]:
-        """Удаление метаданных из аудио файла.
+        """Удаление метаданных из аудио или видео файла.
         
         Args:
-            file_path: Путь к аудио файлу
+            file_path: Путь к аудио или видео файлу
             backup_path: Путь к резервной копии (если есть)
-            remove_options: Опции удаления (для аудио всегда удаляются все теги)
+            remove_options: Опции удаления (для аудио/видео всегда удаляются все теги)
             
         Returns:
             Кортеж (успех, сообщение)

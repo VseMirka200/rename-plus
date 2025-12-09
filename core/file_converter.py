@@ -130,6 +130,21 @@ class FileConverter:
         self.win32com = None
         self.use_docx2pdf = False  # Флаг для отключения docx2pdf если доступны COM методы
         
+        # Попытка импортировать pdf2docx для конвертации PDF в DOCX
+        self.pdf2docx_available = False
+        self.pdf2docx_convert = None
+        self.Converter = None
+        try:
+            from pdf2docx import Converter
+            self.Converter = Converter
+            self.pdf2docx_available = True
+            logger.info("pdf2docx доступен для конвертации PDF в DOCX")
+        except ImportError:
+            # Не устанавливаем автоматически при инициализации, чтобы не блокировать запуск
+            # Пользователь может установить pdf2docx вручную при необходимости
+            logger.debug("pdf2docx не найден. Для конвертации PDF в DOCX установите: pip install pdf2docx")
+            self.pdf2docx_available = False
+        
         # Пробуем альтернативный способ через comtypes или win32com (Windows)
         # Приоритет: win32com > comtypes > docx2pdf
         # ВАЖНО: Импортируем оба метода, чтобы использовать comtypes как fallback
@@ -251,7 +266,8 @@ class FileConverter:
         # Поддерживаемые форматы документов
         # Примечание: python-docx не поддерживает конвертацию в старый формат .doc
         self.supported_document_formats = {
-            '.docx': 'DOCX'
+            '.docx': 'DOCX',
+            '.pdf': 'PDF'
         }
         
         # Поддерживаемые целевые форматы для документов
@@ -291,9 +307,15 @@ class FileConverter:
                 # DOCX в DOCX не поддерживается (тот же формат)
                 if source_ext == '.docx' and target_ext == '.docx':
                     return False
+                # PDF в PDF не поддерживается (тот же формат)
+                if source_ext == '.pdf' and target_ext == '.pdf':
+                    return False
                 # DOCX в PDF
                 if source_ext == '.docx' and target_ext == '.pdf':
                     return self.docx2pdf_available
+                # PDF в DOCX
+                if source_ext == '.pdf' and target_ext == '.docx':
+                    return self.pdf2docx_available
                 # Для других форматов документов
                 if self.docx_available:
                     return True
@@ -328,36 +350,33 @@ class FileConverter:
         
         ext = os.path.splitext(file_path)[1].lower()
         
-        # Изображения
+        # Изображения (только популярные)
         image_extensions = {
-            '.jpg', '.jpeg', '.png', '.bmp', '.tiff', '.tif', '.webp', '.gif',
-            '.ico', '.jfif', '.jp2', '.jpx', '.j2k', '.j2c', '.pcx', '.ppm', 
-            '.pgm', '.pbm', '.pnm', '.psd', '.xbm', '.xpm', '.heic', '.heif', '.avif', '.svg'
+            '.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp', '.tiff', '.tif',
+            '.ico', '.svg', '.heic', '.heif', '.avif', '.dng', '.cr2', '.nef', '.raw'
         }
         if ext in image_extensions:
             return 'image'
         
-        # Документы
+        # Документы (только популярные)
         document_extensions = {
-            '.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx',
-            '.odt', '.ods', '.odp', '.rtf', '.txt', '.csv'
+            '.pdf', '.docx', '.doc', '.xlsx', '.xls', '.pptx', '.ppt',
+            '.txt', '.rtf', '.csv', '.html', '.htm', '.odt', '.ods', '.odp'
         }
         if ext in document_extensions:
             return 'document'
         
-        # Аудио
+        # Аудио (только популярные)
         audio_extensions = {
-            '.mp3', '.flac', '.ogg', '.m4a', '.aac', '.wma', '.wav',
-            '.mp4', '.m4p', '.aiff', '.au', '.ra', '.amr', '.3gp', '.opus',
-            '.ape', '.mpc', '.tta', '.wv', '.dsf', '.dff', '.mka', '.mkv'
+            '.mp3', '.wav', '.flac', '.aac', '.ogg', '.m4a', '.wma', '.opus'
         }
         if ext in audio_extensions:
             return 'audio'
         
-        # Видео
+        # Видео (только популярные)
         video_extensions = {
-            '.mp4', '.avi', '.mov', '.mkv', '.wmv', '.flv', '.webm', '.m4v',
-            '.3gp', '.mpg', '.mpeg', '.m2v', '.divx', '.xvid', '.rm', '.rmvb'
+            '.mp4', '.avi', '.mkv', '.mov', '.wmv', '.flv', '.webm', '.m4v',
+            '.mpg', '.mpeg', '.3gp'
         }
         if ext in video_extensions:
             return 'video'
@@ -401,7 +420,7 @@ class FileConverter:
             # Проверяем тип файла и конвертируем соответственно
             if source_ext in self.supported_document_formats:
                 # Конвертация документов Word
-                if target_ext == '.pdf':
+                if source_ext == '.docx' and target_ext == '.pdf':
                     result = self._convert_docx_to_pdf(file_path, output_path, compress_pdf)
                     # Если конвертация успешна и нужно сжать PDF
                     if result[0] and compress_pdf and os.path.exists(result[2]):
@@ -409,6 +428,8 @@ class FileConverter:
                         if compress_result[0]:
                             return True, f"{result[1]} (PDF сжат)", result[2]
                     return result
+                elif source_ext == '.pdf' and target_ext == '.docx':
+                    return self._convert_pdf_to_docx(file_path, output_path)
                 else:
                     return self._convert_document(file_path, target_ext, output_path)
             elif source_ext in self.supported_image_formats:
@@ -887,4 +908,54 @@ class FileConverter:
             if "Word.Application" in error_msg or "COM" in error_msg:
                 return False, "Не удалось использовать Microsoft Word. Убедитесь, что Word установлен и доступен.", None
             return False, f"Ошибка: {error_msg}", None
+    
+    def _convert_pdf_to_docx(self, file_path: str, output_path: str) -> Tuple[bool, str, Optional[str]]:
+        """Конвертация PDF в DOCX.
+        
+        Args:
+            file_path: Путь к исходному PDF файлу
+            output_path: Путь для сохранения DOCX
+            
+        Returns:
+            Кортеж (успех, сообщение, путь к выходному файлу)
+        """
+        if not self.pdf2docx_available:
+            return False, "Библиотека для конвертации PDF в DOCX не установлена. Установите pdf2docx", None
+        
+        try:
+            # Нормализуем пути
+            file_path = os.path.abspath(file_path)
+            output_path = os.path.abspath(output_path)
+            
+            # Убеждаемся, что директория существует
+            output_dir = os.path.dirname(output_path)
+            if output_dir and not os.path.exists(output_dir):
+                os.makedirs(output_dir, exist_ok=True)
+            
+            logger.info(f"Конвертируем PDF в DOCX: {file_path} -> {output_path}")
+            
+            # Создаем конвертер
+            converter = self.Converter(file_path)
+            
+            try:
+                # Конвертируем PDF в DOCX
+                converter.convert(output_path)
+                
+                # Проверяем, что файл создан
+                if os.path.exists(output_path):
+                    logger.info(f"PDF успешно конвертирован в DOCX: {output_path}")
+                    return True, "PDF успешно конвертирован в DOCX", output_path
+                else:
+                    return False, "Файл DOCX не был создан", None
+            finally:
+                # Закрываем конвертер
+                try:
+                    converter.close()
+                except Exception:
+                    pass
+                
+        except Exception as e:
+            logger.error(f"Ошибка при конвертации PDF в DOCX {file_path}: {e}", exc_info=True)
+            error_msg = str(e)
+            return False, f"Ошибка конвертации: {error_msg}", None
 

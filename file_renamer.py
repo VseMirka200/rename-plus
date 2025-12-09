@@ -648,11 +648,9 @@ class FileRenamerApp:
                 main_container.columnconfigure(1, weight=4, uniform="panels")
             
             self.root.after(500, configure_columns)
-            self.root.after(500, configure_columns)
         
-        self.root.after(100, update_column_config)
+        # Оптимизация: один вызов вместо трех
         self.root.after(300, update_column_config)
-        self.root.after(500, update_column_config)
         
         # Обработчик изменения размера для обновления колонок таблицы (только для этой вкладки)
         def on_resize(event=None):
@@ -1887,7 +1885,7 @@ class FileRenamerApp:
     
     def _create_main_log_tab(self):
         """Создание вкладки лога операций на главном экране"""
-        log_tab = tk.Frame(self.main_notebook, bg=self.colors['bg_card'])
+        log_tab = tk.Frame(self.main_notebook, bg=self.colors['bg_main'])
         log_tab.columnconfigure(0, weight=1)
         log_tab.rowconfigure(1, weight=1)
         self.main_notebook.add(log_tab, text="Лог операций")
@@ -2292,14 +2290,7 @@ class FileRenamerApp:
             self.colors['danger'], 'white',
             font=('Robot', 9, 'bold'), padx=10, pady=6,
             active_bg=self.colors['danger_hover'])
-        btn_remove_selected.pack(fill=tk.X, pady=(0, 4))
-        
-        btn_remove_all = self.create_rounded_button(
-            buttons_frame, "Удалить все метаданные", self._remove_all_metadata_files,
-            self.colors['danger'], 'white',
-            font=('Robot', 9, 'bold'), padx=10, pady=6,
-            active_bg=self.colors['danger_hover'])
-        btn_remove_all.pack(fill=tk.X)
+        btn_remove_selected.pack(fill=tk.X)
     
     def _create_main_file_converter_tab(self):
         """Создание вкладки конвертации файлов на главном экране"""
@@ -2514,15 +2505,15 @@ class FileRenamerApp:
     
     def _create_main_about_tab(self):
         """Создание вкладки о программе на главном экране"""
-        about_tab = tk.Frame(self.main_notebook, bg=self.colors['bg_card'])
+        about_tab = tk.Frame(self.main_notebook, bg=self.colors['bg_main'])
         about_tab.columnconfigure(0, weight=1)
         about_tab.rowconfigure(0, weight=1)
         self.main_notebook.add(about_tab, text="О программе")
         
         # Содержимое о программе с прокруткой
-        canvas = tk.Canvas(about_tab, bg=self.colors['bg_card'], highlightthickness=0)
+        canvas = tk.Canvas(about_tab, bg=self.colors['bg_main'], highlightthickness=0)
         scrollbar = ttk.Scrollbar(about_tab, orient="vertical", command=canvas.yview)
-        scrollable_frame = tk.Frame(canvas, bg=self.colors['bg_card'])
+        scrollable_frame = tk.Frame(canvas, bg=self.colors['bg_main'])
         
         scrollable_frame.bind(
             "<Configure>",
@@ -2579,18 +2570,45 @@ class FileRenamerApp:
         image_frame = tk.Frame(about_content_frame, bg=self.colors['bg_card'])
         image_frame.pack(side=tk.LEFT, padx=(0, 20))
         try:
-            image_path = os.path.join(os.path.dirname(__file__), "materials", "icon", "Иконка.png")
-            if not os.path.exists(image_path):
-                image_path = os.path.join(os.path.dirname(__file__), "materials", "icon", "1000x1000.png")
-            if os.path.exists(image_path) and HAS_PIL:
+            # Пробуем разные варианты путей к иконке
+            possible_paths = [
+                os.path.join(os.path.dirname(__file__), "materials", "icon", "Логотип.png"),
+                os.path.join(os.path.dirname(__file__), "materials", "icon", "Иконка.png"),
+                os.path.join(os.path.dirname(__file__), "materials", "icon", "icon.ico"),
+            ]
+            image_path = None
+            for path in possible_paths:
+                if os.path.exists(path):
+                    image_path = path
+                    break
+            
+            if image_path and HAS_PIL:
                 img = Image.open(image_path)
                 img = img.resize((200, 200), Image.Resampling.LANCZOS)
                 photo = ImageTk.PhotoImage(img)
                 image_label = tk.Label(image_frame, image=photo, bg=self.colors['bg_card'])
-                image_label.image = photo
+                image_label.image = photo  # Сохраняем ссылку, чтобы изображение не удалилось
                 image_label.pack()
+            else:
+                # Если изображение не найдено, показываем текстовую заглушку
+                placeholder = tk.Label(image_frame, 
+                                     text="Ренейм+", 
+                                     font=('Robot', 24, 'bold'),
+                                     bg=self.colors['bg_card'],
+                                     fg=self.colors['primary'])
+                placeholder.pack()
         except Exception as e:
             logger.debug(f"Ошибка загрузки изображения: {e}")
+            # Показываем текстовую заглушку при ошибке
+            try:
+                placeholder = tk.Label(image_frame, 
+                                     text="Ренейм+", 
+                                     font=('Robot', 24, 'bold'),
+                                     bg=self.colors['bg_card'],
+                                     fg=self.colors['primary'])
+                placeholder.pack()
+            except:
+                pass
         
         # Описание программы справа от изображения
         desc_frame = tk.Frame(about_content_frame, bg=self.colors['bg_card'])
@@ -2805,13 +2823,13 @@ class FileRenamerApp:
     
     def _create_main_support_tab(self):
         """Создание вкладки поддержки на главном экране"""
-        support_tab = tk.Frame(self.main_notebook, bg=self.colors['bg_card'])
+        support_tab = tk.Frame(self.main_notebook, bg=self.colors['bg_main'])
         support_tab.columnconfigure(0, weight=1)
         support_tab.rowconfigure(0, weight=1)
         self.main_notebook.add(support_tab, text="Поддержка")
         
         # Содержимое поддержки без скроллбара
-        content_frame = tk.Frame(support_tab, bg=self.colors['bg_card'])
+        content_frame = tk.Frame(support_tab, bg=self.colors['bg_main'])
         content_frame.grid(row=0, column=0, sticky="nsew", padx=40, pady=40)
         content_frame.columnconfigure(0, weight=1)
         support_tab.rowconfigure(0, weight=1)
@@ -2880,10 +2898,10 @@ class FileRenamerApp:
             title="Выберите файлы для удаления метаданных",
             filetypes=[
                 ("Все файлы", "*.*"),
-                ("Изображения", "*.jpg *.jpeg *.png *.bmp *.tiff *.tif *.webp *.gif *.ico *.jfif *.jp2 *.jpx *.j2k *.j2c *.pcx *.ppm *.pgm *.pbm *.pnm *.psd *.xbm *.xpm *.svg"),
-                ("Аудио", "*.mp3 *.flac *.ogg *.m4a *.aac *.wma *.wav *.mp4 *.m4p *.aiff *.au *.ra *.amr *.3gp *.opus *.ape *.mpc *.tta *.wv *.dsf *.dff *.mka *.mkv"),
-                ("Видео", "*.mp4 *.avi *.mov *.mkv *.wmv *.flv *.webm *.m4v *.3gp"),
-                ("Документы", "*.pdf *.doc *.docx *.xls *.xlsx *.ppt *.pptx *.odt *.ods *.odp"),
+                ("Изображения", "*.jpg *.jpeg *.png *.gif *.bmp *.webp *.tiff *.tif *.ico *.svg *.heic *.heif *.avif *.dng *.cr2 *.nef *.raw"),
+                ("Аудио", "*.mp3 *.wav *.flac *.aac *.ogg *.m4a *.wma *.opus"),
+                ("Видео", "*.mp4 *.avi *.mkv *.mov *.wmv *.flv *.webm *.m4v *.mpg *.mpeg *.3gp"),
+                ("Документы", "*.pdf *.docx *.doc *.xlsx *.xls *.pptx *.ppt *.txt *.rtf *.csv *.html *.htm *.odt *.ods *.odp"),
             ]
         )
         if files:
@@ -2921,12 +2939,24 @@ class FileRenamerApp:
         if not hasattr(self, 'metadata_checkboxes_frame'):
             return
         
-        # Удаляем старые чекбоксы
+        # Удаляем старые чекбоксы (кроме галочки "Удалить все")
+        widgets_to_remove = []
         for widget in self.metadata_checkboxes_frame.winfo_children():
             if isinstance(widget, tk.Checkbutton):
-                widget.destroy()
+                # Сохраняем галочку "Удалить все метаданные" если она есть
+                try:
+                    if widget.cget('text') == "Удалить все метаданные":
+                        continue
+                except:
+                    pass
+                widgets_to_remove.append(widget)
+            elif isinstance(widget, ttk.Separator):
+                widgets_to_remove.append(widget)
         
-        # Очищаем словари
+        for widget in widgets_to_remove:
+            widget.destroy()
+        
+        # Очищаем словари (но сохраняем переменную для "Удалить все")
         self.metadata_checkboxes = {}
         self.metadata_checkbox_vars = {}
         
@@ -2956,6 +2986,46 @@ class FileRenamerApp:
                         common_fields = common_fields.intersection(set(available_fields))
             
             all_fields = sorted(list(common_fields)) if common_fields else []
+        
+        # Сначала создаем чекбокс "Удалить все метаданные" в начале списка (только если его еще нет)
+        if not hasattr(self, 'metadata_remove_all_var'):
+            self.metadata_remove_all_var = tk.BooleanVar(value=False)
+        
+        # Проверяем, есть ли уже галочка "Удалить все"
+        remove_all_exists = False
+        for widget in self.metadata_checkboxes_frame.winfo_children():
+            if isinstance(widget, tk.Checkbutton):
+                try:
+                    if widget.cget('text') == "Удалить все метаданные":
+                        remove_all_exists = True
+                        break
+                except:
+                    pass
+        
+        if not remove_all_exists:
+            def on_remove_all_toggle():
+                """Обработчик изменения галочки 'Удалить все метаданные'"""
+                if self.metadata_remove_all_var.get():
+                    # Если галочка установлена, удаляем все метаданные
+                    self._remove_all_metadata_files_auto()
+            
+            remove_all_checkbox = tk.Checkbutton(
+                self.metadata_checkboxes_frame,
+                text="Удалить все метаданные",
+                variable=self.metadata_remove_all_var,
+                command=on_remove_all_toggle,
+                bg=self.colors['bg_card'],
+                fg=self.colors['primary'],
+                font=('Robot', 10, 'bold'),
+                selectcolor=self.colors['bg_card'],
+                activebackground=self.colors['bg_card'],
+                activeforeground=self.colors['primary']
+            )
+            remove_all_checkbox.pack(anchor=tk.W, pady=(0, 10))
+            
+            # Разделитель
+            separator = ttk.Separator(self.metadata_checkboxes_frame, orient='horizontal')
+            separator.pack(fill=tk.X, pady=(0, 10))
         
         # Создаем чекбоксы для доступных метаданных
         for field in all_fields:
@@ -3101,8 +3171,98 @@ class FileRenamerApp:
             current_values = self.metadata_removal_tree.item(item, 'values')
             self.metadata_removal_tree.item(item, values=(current_values[0], status))
     
+    def _remove_all_metadata_files_auto(self):
+        """Автоматическое удаление всех метаданных при установке галочки"""
+        # Защита от повторных вызовов
+        if hasattr(self, '_removing_metadata') and self._removing_metadata:
+            return
+        
+        if not hasattr(self, 'metadata_removal_files') or not self.metadata_removal_files:
+            return
+        
+        # Получаем все файлы из списка
+        all_items = self.metadata_removal_tree.get_children()
+        if not all_items:
+            return
+        
+        # Устанавливаем опции для удаления всех метаданных
+        remove_options = {'all': True}
+        
+        # Устанавливаем флаг обработки
+        self._removing_metadata = True
+        
+        # Инициализируем прогресс-бар
+        total_files = len(all_items)
+        self.root.after(0, lambda: self.metadata_progress_bar.config(maximum=total_files, value=0))
+        self.root.after(0, lambda: self.metadata_progress_label.config(text=f"Обработка файлов: 0 / {total_files}"))
+        
+        # Обрабатываем файлы в отдельном потоке
+        def process_files():
+            success_count = 0
+            error_count = 0
+            processed = 0
+            
+            for item in all_items:
+                index = self.metadata_removal_tree.index(item)
+                if 0 <= index < len(self.metadata_removal_files):
+                    file_data = self.metadata_removal_files[index]
+                    file_path = file_data['path']
+                    
+                    # Обновляем прогресс
+                    processed += 1
+                    file_name = os.path.basename(file_path)
+                    self.root.after(0, lambda p=processed, t=total_files, fn=file_name: 
+                                   self._update_metadata_progress(p, t, fn))
+                    
+                    # Удаляем все метаданные
+                    success, message = self.metadata_remover.remove_metadata(
+                        file_path, 
+                        create_backup=True,
+                        remove_options=remove_options
+                    )
+                    
+                    # Обновляем статус в UI
+                    self.root.after(0, lambda idx=index, s=success, m=message: 
+                                   self._update_metadata_removal_status(idx, s, m))
+                    
+                    if success:
+                        success_count += 1
+                    else:
+                        error_count += 1
+            
+            # Завершаем обработку
+            self.root.after(0, lambda: self._finish_metadata_removal_auto(success_count, error_count, total_files))
+            self._removing_metadata = False
+        
+        # Запускаем обработку в отдельном потоке
+        thread = threading.Thread(target=process_files, daemon=True)
+        thread.start()
+    
+    def _finish_metadata_removal_auto(self, success_count: int, error_count: int, total_files: int):
+        """Завершение автоматического удаления метаданных"""
+        try:
+            # Сбрасываем прогресс-бар
+            self.metadata_progress_bar.config(value=total_files)
+            self.metadata_progress_label.config(
+                text=f"Завершено: {success_count} успешно, {error_count} ошибок из {total_files}"
+            )
+            
+            # Сбрасываем галочку "Удалить все метаданные"
+            if hasattr(self, 'metadata_remove_all_var'):
+                self.metadata_remove_all_var.set(False)
+            
+            # Показываем результат
+            if success_count + error_count > 0:
+                message = f"Обработано файлов: {success_count + error_count}\n"
+                message += f"Успешно: {success_count}\n"
+                if error_count > 0:
+                    message += f"Ошибок: {error_count}"
+                messagebox.showinfo("Результат", message)
+        except Exception as e:
+            logger.error(f"Ошибка при завершении удаления метаданных: {e}")
+    
     def _remove_all_metadata_files(self):
-        """Удаление всех метаданных из файлов (игнорируя чекбоксы)"""
+        """Удаление всех метаданных из файлов (игнорируя чекбоксы) - оставлено для совместимости"""
         # Защита от повторных вызовов
         if hasattr(self, '_removing_metadata') and self._removing_metadata:
             return
@@ -3215,8 +3375,11 @@ class FileRenamerApp:
         files = filedialog.askopenfilenames(
             title="Выберите файлы для конвертации",
             filetypes=[
-                ("Изображения", "*.jpg *.jpeg *.png *.bmp *.tiff *.tif *.webp *.gif *.ico *.jfif *.jp2 *.jpx *.j2k *.j2c *.pcx *.ppm *.pgm *.pbm *.pnm *.psd *.xbm *.xpm *.heic *.heif *.avif"),
-                ("Все файлы", "*.*")
+                ("Все файлы", "*.*"),
+                ("Изображения", "*.jpg *.jpeg *.png *.gif *.bmp *.webp *.tiff *.tif *.ico *.svg *.heic *.heif *.avif *.dng *.cr2 *.nef *.raw"),
+                ("Документы", "*.pdf *.docx *.doc *.xlsx *.xls *.pptx *.ppt *.txt *.rtf *.csv *.html *.htm *.odt *.ods *.odp"),
+                ("Аудио", "*.mp3 *.wav *.flac *.aac *.ogg *.m4a *.wma *.opus"),
+                ("Видео", "*.mp4 *.avi *.mkv *.mov *.wmv *.flv *.webm *.m4v *.mpg *.mpeg *.3gp"),
             ]
         )
         if files:
@@ -3249,36 +3412,26 @@ class FileRenamerApp:
                 else:
                     formats_str = "Не поддерживается"
                 
+                # Определяем статус файла
+                if available_formats:
+                    status = 'Готов'
+                else:
+                    status = 'Не поддерживается'
+                
                 file_data = {
                     'path': file_path,
                     'format': ext,
-                    'status': 'Готов',
+                    'status': status,
                     'available_formats': available_formats,  # Сохраняем список форматов, а не строку
                     'category': file_category  # Сохраняем категорию файла
                 }
                 self.converter_files.append(file_data)
-                
-                # Добавляем в treeview только если файл проходит фильтр
-                file_name = os.path.basename(file_path)
-                filter_type = self.converter_filter_var.get() if hasattr(self, 'converter_filter_var') else "Все"
-                filter_mapping = {
-                    "Все": None,
-                    "Изображения": "image",
-                    "Документы": "document",
-                    "Аудио": "audio",
-                    "Видео": "video"
-                }
-                target_category = filter_mapping.get(filter_type)
-                if target_category is None or file_category == target_category:
-                    self.converter_tree.insert("", tk.END, values=(file_name, 'Готов'))
             
             # Обновляем заголовок панели
             if hasattr(self, 'converter_left_panel'):
                 count = len(self.converter_files)
                 self.converter_left_panel.config(text=f"Список файлов (Файлов: {count})")
-            # Обновляем доступные форматы в combobox
-            self._update_available_formats()
-            # Применяем фильтр, если он активен
+            # Применяем фильтр - это обновит treeview и доступные форматы
             self._filter_converter_files_by_type()
             self.log(f"Добавлено файлов для конвертации: {len(files)}")
     
@@ -3374,9 +3527,8 @@ class FileRenamerApp:
             # Формируем список форматов в зависимости от типа фильтра
             if target_category == "image":
                 # Для изображений показываем только форматы изображений
-                image_formats = ['.jpg', '.jpeg', '.png', '.bmp', '.tiff', '.tif', '.webp', '.gif', 
-                               '.ico', '.jfif', '.jp2', '.jpx', '.j2k', '.j2c', '.pcx', '.ppm', 
-                               '.pgm', '.pbm', '.pnm', '.psd', '.xbm', '.xpm', '.heic', '.heif', '.avif']
+                image_formats = ['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp', '.tiff', '.tif',
+                               '.ico', '.svg', '.heic', '.heif', '.avif', '.dng', '.cr2', '.nef', '.raw']
                 filtered_formats = [f for f in all_supported_formats if f in image_formats]
             elif target_category == "document":
                 # Для документов показываем только форматы документов
@@ -3384,11 +3536,11 @@ class FileRenamerApp:
                 filtered_formats = [f for f in all_supported_formats if f in doc_formats]
             elif target_category == "audio":
                 # Для аудио показываем только форматы аудио (если они поддерживаются)
-                audio_formats = ['.mp3', '.flac', '.ogg', '.m4a', '.aac', '.wma', '.wav']
+                audio_formats = ['.mp3', '.wav', '.flac', '.aac', '.ogg', '.m4a', '.wma', '.opus']
                 filtered_formats = [f for f in all_supported_formats if f in audio_formats]
             elif target_category == "video":
                 # Для видео показываем только форматы видео (если они поддерживаются)
-                video_formats = ['.mp4', '.avi', '.mov', '.mkv', '.wmv', '.flv', '.webm']
+                video_formats = ['.mp4', '.avi', '.mkv', '.mov', '.wmv', '.flv', '.webm', '.m4v', '.mpg', '.mpeg', '.3gp']
                 filtered_formats = [f for f in all_supported_formats if f in video_formats]
             else:
                 # Для "Все" показываем все поддерживаемые форматы
@@ -3752,56 +3904,29 @@ class FileRenamerApp:
                 # Определяем категорию файла
                 file_category = self.file_converter.get_file_type_category(file_path)
                 
-                # Формируем строку с доступными форматами
+                # Определяем статус файла
                 if available_formats:
-                    formats_str = ", ".join(available_formats[:5])  # Показываем первые 5 форматов
-                    if len(available_formats) > 5:
-                        formats_str += f" (+{len(available_formats) - 5})"
+                    status = 'Готов'
                 else:
-                    formats_str = "Не поддерживается"
+                    status = 'Не поддерживается'
                 
                 file_data = {
                     'path': file_path,
                     'format': ext,
-                    'status': 'Готов',
+                    'status': status,
                     'available_formats': available_formats,  # Сохраняем список форматов, а не строку
                     'category': file_category  # Сохраняем категорию файла
                 }
                 self.converter_files.append(file_data)
-                
-                # Добавляем в treeview только если файл проходит фильтр
-                file_name = os.path.basename(file_path)
-                filter_type = self.converter_filter_var.get() if hasattr(self, 'converter_filter_var') else "Все"
-                filter_mapping = {
-                    "Все": None,
-                    "Изображения": "image",
-                    "Документы": "document",
-                    "Аудио": "audio",
-                    "Видео": "video"
-                }
-                target_category = filter_mapping.get(filter_type)
-                if target_category is None or file_category == target_category:
-                    self.converter_tree.insert("", tk.END, values=(file_name, 'Готов'))
-            
                 added_count += 1
             
             if added_count > 0:
-                # Обновляем доступные форматы в combobox
-                self._update_available_formats()
-                # Применяем фильтр, если он активен
-                self._filter_converter_files_by_type()
                 # Обновляем заголовок панели
                 if hasattr(self, 'converter_left_panel'):
                     count = len(self.converter_files)
-                    filter_type = self.converter_filter_var.get() if hasattr(self, 'converter_filter_var') else "Все"
-                    if filter_type == "Все":
-                        self.converter_left_panel.config(text=f"Список файлов (Файлов: {count})")
-                    else:
-                        visible_count = len([f for f in self.converter_files 
-                                           if f.get('category') == {'Все': None, 'Изображения': 'image', 
-                                                                   'Документы': 'document', 'Аудио': 'audio', 
-                                                                   'Видео': 'video'}.get(filter_type)])
-                        self.converter_left_panel.config(text=f"Список файлов (Файлов: {visible_count} / {count})")
+                    self.converter_left_panel.config(text=f"Список файлов (Файлов: {count})")
+                # Применяем фильтр - это обновит treeview и доступные форматы
+                self._filter_converter_files_by_type()
                 self.log(f"✅ Добавлено файлов для конвертации перетаскиванием: {added_count}")
         except Exception as e:
             logger.error(f"Ошибка при обработке перетаскивания файлов для конвертации: {e}", exc_info=True)
@@ -4157,15 +4282,15 @@ class FileRenamerApp:
     def _create_about_tab(self, notebook):
         """Создание вкладки о программе"""
         # Фрейм для вкладки о программе
-        about_tab = tk.Frame(notebook, bg=self.colors['bg_card'])
+        about_tab = tk.Frame(notebook, bg=self.colors['bg_main'])
         about_tab.columnconfigure(0, weight=1)
         about_tab.rowconfigure(0, weight=1)
         notebook.add(about_tab, text="О программе")
         
         # Содержимое о программе с прокруткой
-        canvas = tk.Canvas(about_tab, bg=self.colors['bg_card'], highlightthickness=0)
+        canvas = tk.Canvas(about_tab, bg=self.colors['bg_main'], highlightthickness=0)
         scrollbar = ttk.Scrollbar(about_tab, orient="vertical", command=canvas.yview)
-        scrollable_frame = tk.Frame(canvas, bg=self.colors['bg_card'])
+        scrollable_frame = tk.Frame(canvas, bg=self.colors['bg_main'])
         
         scrollable_frame.bind(
             "<Configure>",
@@ -4325,13 +4450,13 @@ class FileRenamerApp:
     def _create_support_tab(self, notebook):
         """Создание вкладки поддержки"""
         # Фрейм для вкладки поддержки
-        support_tab = tk.Frame(notebook, bg=self.colors['bg_card'])
+        support_tab = tk.Frame(notebook, bg=self.colors['bg_main'])
         support_tab.columnconfigure(0, weight=1)
         support_tab.rowconfigure(0, weight=1)
         notebook.add(support_tab, text="Поддержка")
         
         # Содержимое поддержки без скроллбара
-        content_frame = tk.Frame(support_tab, bg=self.colors['bg_card'])
+        content_frame = tk.Frame(support_tab, bg=self.colors['bg_main'])
         content_frame.grid(row=0, column=0, sticky="nsew", padx=40, pady=40)
         content_frame.columnconfigure(0, weight=1)
         support_tab.rowconfigure(0, weight=1)
@@ -4566,15 +4691,20 @@ class FileRenamerApp:
                 self.log(error_msg)
                 return
             
+            # Логируем первые 200 символов данных для отладки
+            data_preview = data[:200] + "..." if len(data) > 200 else data
+            self.log(f"Получены данные drag&drop (первые 200 символов): {data_preview}")
+            
             # Разбираем по фигурным скобкам (стандартный формат tkinterdnd2)
             # Формат: {C:\path\file1.ext} {C:\path\file2.ext} ...
             file_paths = []
             
             # Используем более надёжный метод разбора путей
-            import re
+            # tkinterdnd2 на Windows возвращает файлы в формате: {file1} {file2} {file3}
+            # Где каждый файл заключен в фигурные скобки
             
             # Метод 1: Ищем все паттерны {путь} - основной формат tkinterdnd2
-            # Используем нежадное совпадение, чтобы правильно обрабатывать множественные пути
+            # Используем нежадное совпадение для правильной обработки множественных путей
             pattern = r'\{([^}]+)\}'
             matches = re.findall(pattern, data)
             
@@ -4582,28 +4712,53 @@ class FileRenamerApp:
                 # Найдены пути в фигурных скобках - это основной формат tkinterdnd2
                 file_paths = [match.strip() for match in matches if match.strip()]
                 self.log(f"Найдено путей в фигурных скобках: {len(file_paths)}")
+                # Логируем первые несколько путей для отладки
+                if file_paths:
+                    preview_paths = file_paths[:3]
+                    for i, path in enumerate(preview_paths, 1):
+                        self.log(f"  Путь {i}: {path}")
+                    if len(file_paths) > 3:
+                        self.log(f"  ... и еще {len(file_paths) - 3} путей")
             else:
                 # Метод 2: Если нет фигурных скобок, пробуем другие форматы
-                if data.strip():
-                    # Убираем внешние кавычки, если есть
-                    data_clean = data.strip().strip('"').strip("'")
-                    
-                    # Проверяем, является ли это одним существующим путем
-                    if os.path.exists(data_clean):
-                        file_paths = [data_clean]
-                        self.log("Найден один путь без скобок")
+                # На Windows пути могут быть в кавычках и разделены пробелами
+                if sys.platform == 'win32':
+                    # Пробуем найти пути в кавычках: "C:\path1" "C:\path2"
+                    quoted_paths = re.findall(r'"([^"]+)"', data)
+                    if quoted_paths:
+                        file_paths = [p.strip() for p in quoted_paths if p.strip()]
+                        self.log(f"Найдено путей в кавычках: {len(file_paths)}")
                     else:
-                        # Метод 3: Пробуем разделить по пробелам (может не сработать для путей с пробелами)
-                        parts = data.split()
-                        for part in parts:
-                            part_clean = part.strip('"').strip("'").strip('{}')
-                            if part_clean and (os.path.exists(part_clean) or os.path.isfile(part_clean)):
-                                file_paths.append(part_clean)
+                        # Пробуем найти пути, начинающиеся с буквы диска
+                        # Паттерн: C:\... или C:/... (до следующего пробела или конца строки)
+                        win_path_pattern = r'([A-Za-z]:[\\/][^\s"]+)'
+                        win_matches = re.findall(win_path_pattern, data)
+                        if win_matches:
+                            file_paths = [m.strip() for m in win_matches if m.strip()]
+                            self.log(f"Найдено Windows путей по паттерну: {len(file_paths)}")
+                        else:
+                            # Последняя попытка: пробуем как один путь
+                            data_clean = data.strip().strip('"').strip("'")
+                            if data_clean and os.path.exists(data_clean):
+                                file_paths = [data_clean]
+                                self.log("Найден один путь без скобок")
+                else:
+                    # Linux/Mac: пути разделены пробелами
+                    if data.strip():
+                        data_clean = data.strip().strip('"').strip("'")
+                        if os.path.exists(data_clean):
+                            file_paths = [data_clean]
+                        else:
+                            parts = data.split()
+                            for part in parts:
+                                part_clean = part.strip('"').strip("'")
+                                if part_clean and os.path.exists(part_clean):
+                                    file_paths.append(part_clean)
             
-            # Метод 4: Если всё ещё пусто, пробуем как один файл (может быть путь с пробелами без скобок)
+            # Метод 3: Если всё ещё пусто, пробуем как один файл
             if not file_paths and data.strip():
                 data_clean = data.strip().strip('"').strip("'").strip('{}')
-                if data_clean:
+                if data_clean and os.path.exists(data_clean):
                     file_paths = [data_clean]
                     self.log("Пробую как один путь")
             
@@ -4967,7 +5122,16 @@ class FileRenamerApp:
     
     def add_files(self):
         """Добавление файлов через диалог выбора"""
-        files = filedialog.askopenfilenames(title="Выберите файлы")
+        files = filedialog.askopenfilenames(
+            title="Выберите файлы",
+            filetypes=[
+                ("Все файлы", "*.*"),
+                ("Изображения", "*.jpg *.jpeg *.png *.gif *.bmp *.webp *.tiff *.tif *.ico *.svg *.heic *.heif *.avif *.dng *.cr2 *.nef *.raw"),
+                ("Документы", "*.pdf *.docx *.doc *.xlsx *.xls *.pptx *.ppt *.txt *.rtf *.csv *.html *.htm *.odt *.ods *.odp"),
+                ("Аудио", "*.mp3 *.wav *.flac *.aac *.ogg *.m4a *.wma *.opus"),
+                ("Видео", "*.mp4 *.avi *.mkv *.mov *.wmv *.flv *.webm *.m4v *.mpg *.mpeg *.3gp"),
+            ]
+        )
         if files:
             files_before = len(self.files)
             for file_path in files:

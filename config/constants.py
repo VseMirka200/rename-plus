@@ -10,16 +10,25 @@ DEFAULT_WINDOW_HEIGHT = 600
 MIN_WINDOW_WIDTH = 1000
 MIN_WINDOW_HEIGHT = 600
 
-# Форматы файлов
+# Форматы файлов (только популярные)
 SUPPORTED_IMAGE_FORMATS = {
-    '.jpg', '.jpeg', '.png', '.bmp', '.tiff', '.tif', '.webp', '.gif',
-    '.ico', '.jfif', '.jp2', '.jpx', '.j2k', '.j2c', '.pcx', '.ppm',
-    '.pgm', '.pbm', '.pnm', '.psd', '.xbm', '.xpm', '.heic', '.heif', '.avif'
+    '.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp', '.tiff', '.tif',
+    '.ico', '.svg', '.heic', '.heif', '.avif', '.dng', '.cr2', '.nef', '.raw'
 }
 
-SUPPORTED_DOCUMENT_FORMATS = {'.docx'}
-SUPPORTED_AUDIO_FORMATS = {'.mp3', '.flac', '.ogg', '.wav', '.m4a', '.aac'}
-SUPPORTED_VIDEO_FORMATS = {'.mp4', '.avi', '.mkv', '.mov', '.wmv', '.flv'}
+SUPPORTED_DOCUMENT_FORMATS = {
+    '.pdf', '.docx', '.doc', '.xlsx', '.xls', '.pptx', '.ppt',
+    '.txt', '.rtf', '.csv', '.html', '.htm', '.odt', '.ods', '.odp'
+}
+
+SUPPORTED_AUDIO_FORMATS = {
+    '.mp3', '.wav', '.flac', '.aac', '.ogg', '.m4a', '.wma', '.opus'
+}
+
+SUPPORTED_VIDEO_FORMATS = {
+    '.mp4', '.avi', '.mkv', '.mov', '.wmv', '.flv', '.webm', '.m4v',
+    '.mpg', '.mpeg', '.3gp'
+}
 
 # Качество по умолчанию
 DEFAULT_JPEG_QUALITY = 95
