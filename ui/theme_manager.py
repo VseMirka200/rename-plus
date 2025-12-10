@@ -22,7 +22,7 @@ class ThemeManager:
             'info_hover': '#2563EB',
             'secondary': '#6B7280',
             'secondary_hover': '#4B5563',
-            'bg_main': '#F5F7FA',
+            'bg_main': '#FFFFFF',
         'bg_card': '#FFFFFF',
         'bg_secondary': '#EDF2F7',
         'bg_hover': '#F7FAFC',

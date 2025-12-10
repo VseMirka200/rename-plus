@@ -1,10 +1,26 @@
-"""Утилиты для работы с COM объектами (Word, Excel и т.д.)."""
+"""Утилиты для работы с COM объектами (Word, Excel и т.д.).
+
+Предоставляет функции для безопасной работы с Microsoft Office приложениями
+через COM интерфейс, включая создание приложений, конвертацию документов
+и проверку наличия установленных приложений.
+"""
 
 import logging
 import os
+import sys
 from typing import Optional, Tuple, Any
 
 logger = logging.getLogger(__name__)
+
+# Импорт winreg для проверки наличия Word (только на Windows)
+if sys.platform == 'win32':
+    try:
+        import winreg
+        HAS_WINREG = True
+    except ImportError:
+        HAS_WINREG = False
+else:
+    HAS_WINREG = False
 
 
 def cleanup_word_application(word_app: Optional[Any]) -> None:
@@ -33,6 +49,51 @@ def cleanup_word_document(doc: Optional[Any]) -> None:
             logger.warning(f"Ошибка при закрытии документа: {e}")
 
 
+def check_word_installed() -> Tuple[bool, str]:
+    """Проверка наличия Microsoft Word в системе.
+    
+    Проверяет реестр Windows на наличие установленного Microsoft Office/Word.
+    
+    Returns:
+        Tuple[установлен, сообщение] - True если Word установлен, иначе False
+    """
+    if sys.platform != 'win32':
+        return False, "Microsoft Word доступен только на Windows"
+    
+    if not HAS_WINREG:
+        # Если winreg недоступен, возвращаем неопределенный результат
+        return True, "Не удалось проверить наличие Word (проверка реестра недоступна)"
+    
+    # Проверяем наличие Word в реестре
+    word_paths = [
+        (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Office"),
+        (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\WOW6432Node\Microsoft\Office"),
+    ]
+    
+    for hkey, path in word_paths:
+        try:
+            with winreg.OpenKey(hkey, path) as key:
+                # Проверяем установленные версии Office
+                for i in range(winreg.QueryInfoKey(key)[0]):
+                    subkey_name = winreg.EnumKey(key, i)
+                    # Проверяем версии Office (16.0 = Office 2016+, 15.0 = Office 2013, 14.0 = Office 2010)
+                    if any(ver in subkey_name for ver in ['16.0', '15.0', '14.0', '12.0']):
+                        # Проверяем наличие Word в этой версии
+                        try:
+                            with winreg.OpenKey(key, subkey_name) as ver_key:
+                                try:
+                                    with winreg.OpenKey(ver_key, r"Word\InstallRoot") as word_key:
+                                        return True, "Microsoft Word найден в системе"
+                                except (OSError, FileNotFoundError):
+                                    continue
+                        except (OSError, FileNotFoundError):
+                            continue
+        except (OSError, FileNotFoundError):
+            continue
+    
+    return False, "Microsoft Word не найден в системе. Установите Microsoft Office с Word."
+
+
 def create_word_application(com_client: Any) -> Tuple[Optional[Any], Optional[str]]:
     """Создание объекта Word.Application с несколькими попытками.
     
@@ -42,30 +103,46 @@ def create_word_application(com_client: Any) -> Tuple[Optional[Any], Optional[st
     Returns:
         Tuple[word_app, error_message] - объект Word или None и сообщение об ошибке
     """
+    # Сначала проверяем, установлен ли Word
+    word_installed, install_msg = check_word_installed()
+    if not word_installed:
+        return None, install_msg
+    
     # Пробуем разные способы создания Word объекта
     try:
         word = com_client.Dispatch('Word.Application')
         return word, None
     except Exception as e1:
-        logger.warning(f"Первый способ создания Word.Application не удался: {e1}")
+        error_msg1 = str(e1)
+        logger.warning(f"Первый способ создания Word.Application не удался: {error_msg1}")
+        
         # Пробуем альтернативный способ через DispatchEx
         try:
             word = com_client.DispatchEx('Word.Application')
             logger.debug("Word.Application создан через DispatchEx")
             return word, None
         except Exception as e2:
-            logger.warning(f"Второй способ создания Word.Application не удался: {e2}")
+            error_msg2 = str(e2)
+            logger.warning(f"Второй способ создания Word.Application не удался: {error_msg2}")
+            
             # Пробуем через GetActiveObject (если Word уже запущен)
             try:
                 word = com_client.GetActiveObject('Word.Application')
                 logger.debug("Word.Application получен через GetActiveObject (Word уже запущен)")
                 return word, None
             except Exception as e3:
-                error_msg = str(e1)
-                logger.error(f"Все способы создания Word.Application не удались. Первая ошибка: {error_msg}")
-                if "Invalid class string" in error_msg or "CLSID" in error_msg or "Class not registered" in error_msg:
-                    return None, "Microsoft Word не установлен или недоступен. Убедитесь, что Word установлен и зарегистрирован в системе."
-                return None, f"Не удалось создать объект Word.Application: {error_msg}"
+                error_msg3 = str(e3)
+                logger.error(f"Все способы создания Word.Application не удались. Ошибки: {error_msg1}, {error_msg2}, {error_msg3}")
+                
+                # Формируем понятное сообщение об ошибке
+                if any(keyword in error_msg1.lower() for keyword in ['invalid class string', 'clsid', 'class not registered', 'progid']):
+                    return None, "Microsoft Word не установлен или не зарегистрирован в системе. Установите Microsoft Office с Word."
+                elif "access is denied" in error_msg1.lower() or "permission" in error_msg1.lower():
+                    return None, "Нет доступа к Microsoft Word. Запустите программу от имени администратора или закройте все окна Word."
+                elif "rpc" in error_msg1.lower() or "com" in error_msg1.lower():
+                    return None, "Ошибка COM при подключении к Word. Попробуйте перезапустить Word или перезагрузить компьютер."
+                else:
+                    return None, f"Не удалось создать объект Word.Application: {error_msg1}"
 
 
 def convert_docx_with_word(

@@ -2,7 +2,7 @@
 <project version="4">
   <component name="ProjectModuleManager">
     <modules>
-      <module fileurl="file://$PROJECT_DIR$/.idea/nazovi.iml" filepath="$PROJECT_DIR$/.idea/nazovi.iml" />
+      <module fileurl="file://$PROJECT_DIR$/.idea/rename-plus.iml" filepath="$PROJECT_DIR$/.idea/rename-plus.iml" />
     </modules>
   </component>
 </project>

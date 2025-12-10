@@ -150,11 +150,19 @@ logger = logging.getLogger(__name__)
 class FileRenamerApp:
     """Главный класс приложения для переименования файлов.
     
-    This class manages the entire application lifecycle including:
-    - UI creation and management
-    - File operations (rename, metadata removal, conversion)
-    - Settings and templates management
-    - Plugin system integration
+    Управляет всем жизненным циклом приложения, включая:
+    - Создание и управление пользовательским интерфейсом
+    - Операции с файлами (переименование, удаление метаданных, конвертация)
+    - Управление настройками и шаблонами
+    - Интеграция системы плагинов
+    - Управление библиотеками и зависимостями
+    
+    Attributes:
+        root: Корневое окно Tkinter
+        files: Список файлов для обработки
+        methods_manager: Менеджер методов переименования
+        settings_manager: Менеджер настроек приложения
+        colors: Цветовая схема интерфейса
     """
     
     def __init__(self, root, library_manager=None):
@@ -165,7 +173,14 @@ class FileRenamerApp:
             library_manager: Менеджер библиотек (опционально)
         """
         self.root = root
-        self.root.title("Ренейм+")
+        
+        # Устанавливаем версию программы из констант
+        try:
+            from config.constants import APP_VERSION
+        except ImportError:
+            APP_VERSION = "1.0.0"  # Fallback если константы недоступны
+        
+        self.root.title(f"Ренейм+ v{APP_VERSION}")
         self.library_manager = library_manager
         
         # Используем константы для размеров окна
@@ -210,8 +225,9 @@ class FileRenamerApp:
         self.style = self.style_manager.style
         self.ui_components = UIComponents()
         
-        # Настройка фона окна
+        # Настройка фона окна - единый цвет для всего приложения
         self.root.configure(bg=self.colors['bg_main'])
+        # Устанавливаем bg_main как основной цвет для всех виджетов
         
         # Привязка изменения размера окна для адаптивного масштабирования
         self.root.bind('<Configure>', self.on_window_resize)
@@ -874,27 +890,9 @@ class FileRenamerApp:
         # Сохраняем ссылку на панель
         self.right_panel = right_panel
         
-        # Выбор метода
-        method_label = tk.Label(methods_frame, text="Выберите метод:", 
-                               font=('Robot', 9, 'bold'),
-                               bg=self.colors['bg_card'], fg=self.colors['text_primary'])
-        method_label.pack(anchor=tk.W, pady=(0, 6))
-        
+        # Устанавливаем метод "Новое имя" по умолчанию
         self.method_var = tk.StringVar()
-        method_values = [
-            "Новое имя", "Добавить/Удалить", "Замена", "Регистр",
-            "Нумерация", "Метаданные", "Регулярные выражения"
-        ]
-        self.method_combo = ttk.Combobox(
-            methods_frame,
-            textvariable=self.method_var,
-            values=method_values,
-            state="readonly",
-            font=('Robot', 9)
-        )
-        self.method_combo.pack(fill=tk.X, pady=(0, 8))
-        self.method_combo.bind("<<ComboboxSelected>>", self.on_method_selected)
-        self.method_combo.current(0)  # "Новое имя" по умолчанию
+        self.method_var.set("Новое имя")
         
         # Область настроек метода с прокруткой
         settings_container = tk.Frame(methods_frame, bg=self.colors['bg_card'])
@@ -1066,10 +1064,9 @@ class FileRenamerApp:
         
         
         # === СОЗДАНИЕ ВКЛАДОК НА ГЛАВНОМ ЭКРАНЕ ===
-        # Создаем вкладки для логов, о программе и поддержки
+        # Создаем вкладки для метаданных, конвертации, настроек, о программе и поддержки
         self._create_main_metadata_removal_tab()
         self._create_main_file_converter_tab()
-        self._create_main_log_tab()
         self._create_main_settings_tab()
         self._create_main_about_tab()
         self._create_main_support_tab()
@@ -1867,24 +1864,24 @@ class FileRenamerApp:
         window.protocol("WM_DELETE_WINDOW", on_close)
     
     def open_log_window(self):
-        """Переключение на вкладку лога операций в главном окне"""
+        """Переключение на вкладку настроек (логи теперь в настройках)"""
         if hasattr(self, 'main_notebook') and self.main_notebook:
-            self.main_notebook.select(3)  # Индекс 3 - вкладка лога (после удаления метаданных и конвертации)
+            self.main_notebook.select(3)  # Индекс 3 - вкладка настроек (логи внутри)
     
     def open_settings_window(self):
         """Переключение на вкладку настроек в главном окне"""
         if hasattr(self, 'main_notebook') and self.main_notebook:
-            self.main_notebook.select(3)  # Индекс 3 - вкладка настроек (после лога)
+            self.main_notebook.select(3)  # Индекс 3 - вкладка настроек
     
     def open_about_window(self):
         """Переключение на вкладку о программе в главном окне"""
         if hasattr(self, 'main_notebook') and self.main_notebook:
-            self.main_notebook.select(5)  # Индекс 5 - вкладка о программе (после настроек)
+            self.main_notebook.select(4)  # Индекс 4 - вкладка о программе
     
     def open_support_window(self):
         """Переключение на вкладку поддержки в главном окне"""
         if hasattr(self, 'main_notebook') and self.main_notebook:
-            self.main_notebook.select(6)  # Индекс 6 - вкладка поддержки
+            self.main_notebook.select(5)  # Индекс 5 - вкладка поддержки
     
     def _create_main_log_tab(self):
         """Создание вкладки лога операций на главном экране"""
@@ -2199,8 +2196,11 @@ class FileRenamerApp:
         
         options_canvas.configure(yscrollcommand=on_scroll)
         
-        options_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        options_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        # Используем grid для правильного размещения с автоматическим скроллбаром
+        options_frame.columnconfigure(0, weight=1)
+        options_frame.rowconfigure(0, weight=1)
+        options_canvas.grid(row=0, column=0, sticky="nsew")
+        options_scrollbar.grid(row=0, column=1, sticky="ns")
         
         # Кастомная функция прокрутки с проверкой необходимости
         def on_mousewheel(event):
@@ -2269,7 +2269,7 @@ class FileRenamerApp:
         # Инициализируем чекбоксы (показываем все доступные)
         self._update_metadata_checkboxes()
         
-        # Обновляем scrollregion после создания всех элементов
+        # Обновляем scrollregion после создания всех элементов и при обновлении чекбоксов
         def finalize_scroll():
             options_canvas.update_idletasks()
             bbox = options_canvas.bbox("all")
@@ -2278,6 +2278,8 @@ class FileRenamerApp:
                 # Проверяем видимость скроллбара после небольшой задержки
                 self.root.after(50, update_scrollbar_visibility)
         
+        # Сохраняем ссылку на функцию для вызова при обновлении чекбоксов
+        self._finalize_metadata_scroll = finalize_scroll
         self.root.after(100, finalize_scroll)
         
         # Разделитель перед кнопками
@@ -2553,7 +2555,48 @@ class FileRenamerApp:
                     pass
         
         settings_tab.bind('<Configure>', on_window_configure)
-        canvas.configure(yscrollcommand=scrollbar.set)
+        
+        # Функция для автоматического управления видимостью скроллбара
+        def update_settings_scrollbar_visibility():
+            """Обновление видимости скроллбара в настройках"""
+            try:
+                canvas.update_idletasks()
+                bbox = canvas.bbox("all")
+                if bbox:
+                    canvas_height = canvas.winfo_height()
+                    if canvas_height > 1:
+                        content_height = bbox[3] - bbox[1]
+                        # Если содержимое помещается, скрываем скроллбар
+                        if content_height <= canvas_height + 2:
+                            canvas.configure(scrollregion=(0, 0, bbox[2], canvas_height))
+                            canvas.yview_moveto(0)
+                            try:
+                                if scrollbar.winfo_viewable():
+                                    scrollbar.grid_remove()
+                            except (tk.TclError, AttributeError):
+                                pass
+                        else:
+                            canvas.configure(scrollregion=bbox)
+                            try:
+                                if not scrollbar.winfo_viewable():
+                                    scrollbar.grid(row=0, column=1, sticky="ns")
+                            except (tk.TclError, AttributeError):
+                                pass
+            except (tk.TclError, AttributeError):
+                pass
+        
+        def on_settings_scroll(*args):
+            scrollbar.set(*args)
+            self.root.after(10, update_settings_scrollbar_visibility)
+        
+        canvas.configure(yscrollcommand=on_settings_scroll)
+        
+        # Обновляем scrollregion при изменении содержимого
+        def on_scrollable_configure(event):
+            canvas.configure(scrollregion=canvas.bbox("all"))
+            self.root.after(10, update_settings_scrollbar_visibility)
+        
+        scrollable_frame.bind("<Configure>", on_scrollable_configure)
         
         # Привязка прокрутки колесом мыши
         self.bind_mousewheel(canvas, canvas)
@@ -2564,90 +2607,157 @@ class FileRenamerApp:
         settings_tab.rowconfigure(0, weight=1)
         settings_tab.columnconfigure(0, weight=1)
         
+        # Первоначальная проверка видимости скроллбара
+        self.root.after(100, update_settings_scrollbar_visibility)
+        
         content_frame = scrollable_frame
         content_frame.columnconfigure(0, weight=1)
-        scrollable_frame.configure(padx=40, pady=40)
+        scrollable_frame.configure(padx=20, pady=20)
         
-        # Заголовок
-        title_label = tk.Label(content_frame, text="Настройки", 
-                              font=('Robot', 20, 'bold'),
-                              bg=bg_color, 
-                              fg=self.colors['text_primary'])
-        title_label.pack(anchor=tk.W, pady=(0, 25))
+        # Заголовок убран - настройки начинаются сразу с секций
         
-        # Секция: Общие настройки
-        general_frame = ttk.LabelFrame(content_frame, text="Общие настройки", 
-                                      style='Card.TLabelframe', padding=20)
-        general_frame.pack(fill=tk.X, pady=(0, 20))
+        # Функция для создания сворачиваемой секции
+        def create_collapsible_frame(parent, title, default_expanded=True):
+            """Создание сворачиваемой секции"""
+            # Основной контейнер
+            container = tk.Frame(parent, bg=bg_color)
+            container.pack(fill=tk.X, pady=(0, 10))
+            
+            # Заголовок с кнопкой сворачивания
+            header_frame = tk.Frame(container, bg=self.colors['bg_card'], cursor='hand2')
+            header_frame.pack(fill=tk.X)
+            
+            # Индикатор сворачивания
+            indicator = "▼" if default_expanded else "▶"
+            indicator_label = tk.Label(header_frame, text=indicator, 
+                                     font=('Robot', 12), 
+                                     bg=self.colors['bg_card'],
+                                     fg=self.colors['text_primary'])
+            indicator_label.pack(side=tk.LEFT, padx=(10, 10))
+            
+            # Заголовок секции
+            title_label = tk.Label(header_frame, text=title,
+                                  font=('Robot', 12, 'bold'),
+                                  bg=self.colors['bg_card'],
+                                  fg=self.colors['text_primary'])
+            title_label.pack(side=tk.LEFT)
+            
+            # Контент секции
+            content_frame = ttk.LabelFrame(container, text="", 
+                                          style='Card.TLabelframe', padding=20)
+            is_expanded = default_expanded
+            
+            def toggle():
+                nonlocal is_expanded
+                is_expanded = not is_expanded
+                if is_expanded:
+                    content_frame.pack(fill=tk.BOTH, expand=True)
+                    indicator_label.config(text="▼")
+                else:
+                    content_frame.pack_forget()
+                    indicator_label.config(text="▶")
+            
+            if default_expanded:
+                content_frame.pack(fill=tk.BOTH, expand=True)
+            else:
+                content_frame.pack_forget()
+            
+            # Привязка клика к заголовку
+            header_frame.bind("<Button-1>", lambda e: toggle())
+            indicator_label.bind("<Button-1>", lambda e: toggle())
+            title_label.bind("<Button-1>", lambda e: toggle())
+            
+            return content_frame
         
-        # Автоматическое применение методов
-        auto_apply_var = tk.BooleanVar(value=self.settings.get('auto_apply', False))
-        auto_apply_check = tk.Checkbutton(general_frame, 
-                                         text="Автоматически применять методы при добавлении",
-                                         variable=auto_apply_var,
-                                         font=('Robot', 10),
-                                         bg=self.colors['bg_card'],
-                                         fg=self.colors['text_primary'],
-                                         selectcolor='white',
-                                         activebackground=self.colors['bg_card'],
-                                         activeforeground=self.colors['text_primary'])
-        auto_apply_check.pack(anchor=tk.W, pady=5)
+        # Секция: Лог операций
+        log_frame = create_collapsible_frame(content_frame, "Лог операций", default_expanded=True)
         
-        # Показывать предупреждения
-        show_warnings_var = tk.BooleanVar(value=self.settings.get('show_warnings', True))
-        show_warnings_check = tk.Checkbutton(general_frame, 
-                                            text="Показывать предупреждения перед переименованием",
-                                            variable=show_warnings_var,
-                                            font=('Robot', 10),
-                                            bg=self.colors['bg_card'],
-                                            fg=self.colors['text_primary'],
-                                            selectcolor='white',
-                                            activebackground=self.colors['bg_card'],
-                                            activeforeground=self.colors['text_primary'])
-        show_warnings_check.pack(anchor=tk.W, pady=5)
+        # Панель управления логом
+        log_controls = tk.Frame(log_frame, bg=self.colors['bg_card'])
+        log_controls.pack(fill=tk.X, pady=(0, 10))
+        log_controls.columnconfigure(0, weight=1, uniform="log_buttons")
+        log_controls.columnconfigure(1, weight=1, uniform="log_buttons")
+        log_controls.columnconfigure(2, weight=1, uniform="log_buttons")
         
-        # Секция: Интерфейс
-        ui_frame = ttk.LabelFrame(content_frame, text="Интерфейс", 
-                                 style='Card.TLabelframe', padding=20)
-        ui_frame.pack(fill=tk.X, pady=(0, 20))
+        # Кнопка копирования лога
+        btn_copy_log = self.create_rounded_button(
+            log_controls, "Копировать", self.copy_log,
+            self.colors['info'], 'white',
+            font=('Robot', 9, 'bold'), padx=10, pady=6,
+            active_bg=self.colors['info_hover'], expand=True)
+        btn_copy_log.grid(row=0, column=0, sticky="ew", padx=(0, 5))
         
-        # Размер шрифта
-        font_size_label = tk.Label(ui_frame, text="Размер шрифта:",
-                                   font=('Robot', 11, 'bold'),
-                                   bg=self.colors['bg_card'],
-                                   fg=self.colors['text_primary'])
-        font_size_label.pack(anchor=tk.W, pady=(0, 8))
+        btn_clear_log = self.create_rounded_button(
+            log_controls, "Очистить лог", self.clear_log,
+            self.colors['danger'], 'white',
+            font=('Robot', 9, 'bold'), padx=10, pady=6,
+            active_bg=self.colors['danger_hover'], expand=True)
+        btn_clear_log.grid(row=0, column=1, sticky="ew", padx=(0, 5))
         
-        font_size_var = tk.StringVar(value=self.settings.get('font_size', '10'))
-        font_size_combo = ttk.Combobox(ui_frame, textvariable=font_size_var,
-                                      values=["8", "9", "10", "11", "12"],
-                                      state="readonly", width=10)
-        font_size_combo.pack(anchor=tk.W, pady=(0, 10))
+        # Кнопка выгрузки лога
+        btn_save_log = self.create_rounded_button(
+            log_controls, "Выгрузить лог", self.save_log,
+            self.colors['primary'], 'white',
+            font=('Robot', 9, 'bold'), padx=10, pady=6,
+            active_bg=self.colors['primary_hover'], expand=True)
+        btn_save_log.grid(row=0, column=2, sticky="ew")
         
-        # Секция: Файлы
-        files_frame = ttk.LabelFrame(content_frame, text="Работа с файлами", 
-                                    style='Card.TLabelframe', padding=20)
-        files_frame.pack(fill=tk.X, pady=(0, 20))
+        # Лог операций
+        log_container_frame = tk.Frame(log_frame, bg=self.colors['bg_card'], 
+                                relief='flat', borderwidth=1,
+                                highlightbackground=self.colors['border'],
+                                highlightthickness=1)
+        log_container_frame.pack(fill=tk.BOTH, expand=True)
         
-        # Резервное копирование
-        backup_var = tk.BooleanVar(value=self.settings.get('backup', False))
-        backup_check = tk.Checkbutton(files_frame, 
-                                      text="Создавать резервные копии перед переименованием",
-                                      variable=backup_var,
-                                      font=('Robot', 10),
-                                      bg=self.colors['bg_card'],
-                                      fg=self.colors['text_primary'],
-                                      selectcolor='white',
-                                      activebackground=self.colors['bg_card'],
-                                      activeforeground=self.colors['text_primary'])
-        backup_check.pack(anchor=tk.W, pady=5)
+        log_scroll = ttk.Scrollbar(log_container_frame, orient=tk.VERTICAL)
+        log_text_widget = tk.Text(log_container_frame, yscrollcommand=log_scroll.set,
+                               font=('Consolas', 10),
+                               bg=self.colors['bg_card'], fg=self.colors['text_primary'],
+                               relief='flat', borderwidth=0,
+                               padx=12, pady=10,
+                               wrap=tk.WORD)
+        log_scroll.config(command=log_text_widget.yview)
         
-        # Секция: Управление библиотеками (код уже был добавлен в _create_settings_tab)
+        log_text_widget.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        log_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        
+        # Сохраняем ссылку на скроллбар
+        self.log_scrollbar = log_scroll
+        
+        # Привязка прокрутки колесом мыши для лога
+        self.bind_mousewheel(log_text_widget, log_text_widget)
+        
+        # Автоматическое управление видимостью скроллбара для Text
+        def update_log_scrollbar(*args):
+            self.update_scrollbar_visibility(log_text_widget, log_scroll, 'vertical')
+        
+        log_text_widget.bind('<Key>', lambda e: self.root.after_idle(update_log_scrollbar))
+        log_text_widget.bind('<Button-1>', lambda e: self.root.after_idle(update_log_scrollbar))
+        log_text_widget.bind('<Configure>', lambda e: self.root.after_idle(update_log_scrollbar))
+        
+        # Добавляем контекстное меню для копирования
+        log_context_menu = tk.Menu(log_text_widget, tearoff=0)
+        log_context_menu.add_command(label="Копировать", command=lambda: self._copy_selected_text(log_text_widget))
+        log_context_menu.add_command(label="Копировать всё", command=lambda: self._copy_all_text(log_text_widget))
+        log_context_menu.add_separator()
+        log_context_menu.add_command(label="Выделить всё", command=lambda: self._select_all_text(log_text_widget))
+        
+        def show_context_menu(event):
+            try:
+                log_context_menu.tk_popup(event.x_root, event.y_root)
+            finally:
+                log_context_menu.grab_release()
+        
+        log_text_widget.bind('<Button-3>', show_context_menu)  # Правый клик
+        log_text_widget.bind('<Control-c>', lambda e: self._copy_selected_text(log_text_widget))  # Ctrl+C
+        
+        # Сохраняем ссылку на log_text
+        self.logger.set_log_widget(log_text_widget)
+        
+        # Секция: Управление библиотеками
         # Копируем логику из существующего метода
         if hasattr(self, 'library_manager') and self.library_manager:
-            libs_frame = ttk.LabelFrame(content_frame, text="Управление библиотеками", 
-                                      style='Card.TLabelframe', padding=20)
-            libs_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 20))
+            libs_frame = create_collapsible_frame(content_frame, "Управление библиотеками", default_expanded=True)
             
             libs_info_label = tk.Label(libs_frame,
                                      text="Управление библиотеками программы. Установка и удаление библиотек.",
@@ -2697,10 +2807,32 @@ class FileRenamerApp:
                 for item in libs_tree.get_children():
                     libs_tree.delete(item)
                 
+                # Принудительно обновляем sys.path перед проверкой
+                try:
+                    import site
+                    user_site = site.getusersitepackages()
+                    if user_site and user_site not in sys.path:
+                        sys.path.insert(0, user_site)
+                        site.addsitedir(user_site)
+                except Exception:
+                    pass
+                
                 # Добавляем обязательные библиотеки
                 required_node = libs_tree.insert('', 'end', text='Обязательные', tags=('category',))
                 for lib_name in self.library_manager.REQUIRED_LIBRARIES.keys():
-                    is_installed = self.library_manager.is_library_installed(lib_name)
+                    # Принудительно проверяем библиотеку, игнорируя кэш
+                    import_name = self.library_manager.REQUIRED_LIBRARIES.get(lib_name)
+                    if import_name:
+                        # Очищаем кэш модулей для этой библиотеки перед проверкой
+                        modules_to_remove = [m for m in list(sys.modules.keys()) if m.startswith(import_name)]
+                        for m in modules_to_remove:
+                            try:
+                                del sys.modules[m]
+                            except KeyError:
+                                pass
+                        is_installed = self.library_manager._check_library(lib_name, import_name)
+                    else:
+                        is_installed = False
                     status = "✓ Установлена" if is_installed else "✗ Отсутствует"
                     libs_tree.insert(required_node, 'end', text=lib_name, 
                                    values=(status, 'Обязательная', ''),
@@ -2709,7 +2841,19 @@ class FileRenamerApp:
                 # Добавляем опциональные библиотеки
                 optional_node = libs_tree.insert('', 'end', text='Опциональные', tags=('category',))
                 for lib_name in self.library_manager.OPTIONAL_LIBRARIES.keys():
-                    is_installed = self.library_manager.is_library_installed(lib_name)
+                    # Принудительно проверяем библиотеку, игнорируя кэш
+                    import_name = self.library_manager.OPTIONAL_LIBRARIES.get(lib_name)
+                    if import_name:
+                        # Очищаем кэш модулей для этой библиотеки перед проверкой
+                        modules_to_remove = [m for m in list(sys.modules.keys()) if m.startswith(import_name)]
+                        for m in modules_to_remove:
+                            try:
+                                del sys.modules[m]
+                            except KeyError:
+                                pass
+                        is_installed = self.library_manager._check_library(lib_name, import_name)
+                    else:
+                        is_installed = False
                     status = "✓ Установлена" if is_installed else "○ Не установлена"
                     libs_tree.insert(optional_node, 'end', text=lib_name,
                                    values=(status, 'Опциональная', ''),
@@ -2719,7 +2863,19 @@ class FileRenamerApp:
                 if sys.platform == 'win32':
                     windows_node = libs_tree.insert('', 'end', text='Windows-специфичные', tags=('category',))
                     for lib_name in self.library_manager.WINDOWS_OPTIONAL_LIBRARIES.keys():
-                        is_installed = self.library_manager.is_library_installed(lib_name)
+                        # Принудительно проверяем библиотеку, игнорируя кэш
+                        import_name = self.library_manager.WINDOWS_OPTIONAL_LIBRARIES.get(lib_name)
+                        if import_name:
+                            # Очищаем кэш модулей для этой библиотеки перед проверкой
+                            modules_to_remove = [m for m in list(sys.modules.keys()) if m.startswith(import_name)]
+                            for m in modules_to_remove:
+                                try:
+                                    del sys.modules[m]
+                                except KeyError:
+                                    pass
+                            is_installed = self.library_manager._check_library(lib_name, import_name)
+                        else:
+                            is_installed = False
                         status = "✓ Установлена" if is_installed else "○ Не установлена"
                         libs_tree.insert(windows_node, 'end', text=lib_name,
                                        values=(status, 'Windows', ''),
@@ -2838,70 +2994,6 @@ class FileRenamerApp:
                 active_bg=self.colors['primary_hover'])
             check_all_btn.pack(side=tk.LEFT, padx=(10, 0))
         
-        # Переключатель темы
-        if HAS_THEME:
-            theme_frame = tk.Frame(scrollable_frame, bg=bg_color)
-            theme_frame.pack(fill=tk.X, padx=20, pady=(20, 10))
-            
-            theme_label = tk.Label(
-                theme_frame, text="Тема интерфейса:",
-                font=('Robot', 10, 'bold'),
-                bg=self.colors['bg_main'],
-                fg=self.colors['text_primary'])
-            theme_label.pack(anchor=tk.W, pady=(0, 5))
-            
-            theme_var = tk.StringVar(value=self.settings_manager.get('theme', 'light'))
-            
-            def on_theme_change():
-                theme = theme_var.get()
-                if hasattr(self, 'theme_manager'):
-                    self.theme_manager.set_theme(theme)
-                    self.colors = self.theme_manager.colors
-                    self.settings_manager.set('theme', theme)
-                    self.settings_manager.save_settings()
-                    messagebox.showinfo("Тема изменена",
-                        "Тема изменена. Перезапустите приложение для применения изменений.")
-            
-            light_radio = tk.Radiobutton(
-                theme_frame, text="Светлая", variable=theme_var,
-                value='light', command=on_theme_change,
-                font=('Robot', 9), bg=self.colors['bg_main'],
-                fg=self.colors['text_primary'],
-                selectcolor=self.colors['bg_main'],
-                activebackground=self.colors['bg_main'],
-                activeforeground=self.colors['text_primary'])
-            light_radio.pack(anchor=tk.W, pady=2)
-            
-            dark_radio = tk.Radiobutton(
-                theme_frame, text="Темная", variable=theme_var,
-                value='dark', command=on_theme_change,
-                font=('Robot', 9), bg=self.colors['bg_main'],
-                fg=self.colors['text_primary'],
-                selectcolor=self.colors['bg_main'],
-                activebackground=self.colors['bg_main'],
-                activeforeground=self.colors['text_primary'])
-            dark_radio.pack(anchor=tk.W, pady=2)
-        
-        # Кнопка сохранения
-        def save_settings_handler():
-            settings_to_save = {
-                'auto_apply': auto_apply_var.get(),
-                'show_warnings': show_warnings_var.get(),
-                'font_size': font_size_var.get(),
-                'backup': backup_var.get()
-            }
-            if self.save_settings(settings_to_save):
-                self.settings.update(settings_to_save)
-                messagebox.showinfo("Настройки", "Настройки успешно сохранены!")
-            else:
-                messagebox.showerror("Ошибка", "Не удалось сохранить настройки!")
-        
-        save_btn = self.create_rounded_button(
-            content_frame, "Сохранить настройки", save_settings_handler,
-            self.colors['primary'], 'white',
-            font=('Robot', 9, 'bold'), padx=10, pady=6,
-            active_bg=self.colors['primary_hover'])
-        save_btn.pack(pady=(10, 0))
     
     def _create_main_about_tab(self):
         """Создание вкладки о программе на главном экране"""
@@ -2955,62 +3047,85 @@ class FileRenamerApp:
         
         content_frame = scrollable_frame
         content_frame.columnconfigure(0, weight=1)
-        scrollable_frame.configure(padx=40, pady=40)
+        scrollable_frame.configure(padx=20, pady=20)
         
         # Описание программы - карточка
         about_card = ttk.LabelFrame(content_frame, text="О программе", 
                                     style='Card.TLabelframe', padding=20)
         about_card.pack(fill=tk.X, pady=(10, 20))
         
-        # Контейнер для изображения и описания
+        # Контейнер для изображения и описания (горизонтальный layout)
         about_content_frame = tk.Frame(about_card, bg=self.colors['bg_card'])
-        about_content_frame.pack(fill=tk.X)
+        about_content_frame.pack(fill=tk.BOTH, expand=True)
         
-        # Изображение программы слева от текста
-        image_frame = tk.Frame(about_content_frame, bg=self.colors['bg_card'])
-        image_frame.pack(side=tk.LEFT, padx=(0, 20))
+        # Левая часть: контейнер для изображения, названия и версии (с вертикальным центрированием)
+        left_container = tk.Frame(about_content_frame, bg=self.colors['bg_card'])
+        left_container.pack(side=tk.LEFT, fill=tk.Y, expand=False, padx=(0, 20))
+        
+        # Внутренний контейнер для центрирования содержимого по вертикали
+        left_inner = tk.Frame(left_container, bg=self.colors['bg_card'])
+        left_inner.pack(expand=True, fill=tk.NONE)
+        
+        # Изображение программы
+        image_frame = tk.Frame(left_inner, bg=self.colors['bg_card'])
+        image_frame.pack(anchor=tk.CENTER, pady=(0, 10))
+        
+        # Сохраняем ссылку на изображение в списке
+        if not hasattr(self, '_about_icons'):
+            self._about_icons = []
+        
+        # Получаем версию программы из констант
         try:
-            # Пробуем разные варианты путей к иконке
+            from config.constants import APP_VERSION
+        except ImportError:
+            APP_VERSION = "1.0.0"  # Fallback если константы недоступны
+        
+        try:
+            # Используем существующий логотип приложения
             possible_paths = [
                 os.path.join(os.path.dirname(__file__), "materials", "icon", "Логотип.png"),
-                os.path.join(os.path.dirname(__file__), "materials", "icon", "Иконка.png"),
-                os.path.join(os.path.dirname(__file__), "materials", "icon", "icon.ico"),
+                os.path.join(os.path.dirname(__file__), "materials", "icon", "Логотип.ico"),
             ]
             image_path = None
             for path in possible_paths:
                 if os.path.exists(path):
                     image_path = path
+                    logger.debug(f"Найдено изображение приложения: {path}")
                     break
             
             if image_path and HAS_PIL:
                 img = Image.open(image_path)
-                img = img.resize((200, 200), Image.Resampling.LANCZOS)
+                # Размер изображения (чуть меньше)
+                img = img.resize((250, 250), Image.Resampling.LANCZOS)
                 photo = ImageTk.PhotoImage(img)
+                self._about_icons.append(photo)  # Сохраняем в список
                 image_label = tk.Label(image_frame, image=photo, bg=self.colors['bg_card'])
-                image_label.image = photo  # Сохраняем ссылку, чтобы изображение не удалилось
-                image_label.pack()
+                image_label.pack(anchor=tk.CENTER)
+            elif not HAS_PIL:
+                logger.warning("PIL (Pillow) не установлен, изображение приложения не может быть загружено")
             else:
-                # Если изображение не найдено, показываем текстовую заглушку
-                placeholder = tk.Label(image_frame, 
-                                     text="Ренейм+", 
-                                     font=('Robot', 24, 'bold'),
-                                     bg=self.colors['bg_card'],
-                                     fg=self.colors['primary'])
-                placeholder.pack()
+                logger.warning(f"Изображение приложения не найдено. Проверенные пути: {possible_paths}")
         except Exception as e:
-            logger.debug(f"Ошибка загрузки изображения: {e}")
-            # Показываем текстовую заглушку при ошибке
-            try:
-                placeholder = tk.Label(image_frame, 
-                                     text="Ренейм+", 
-                                     font=('Robot', 24, 'bold'),
-                                     bg=self.colors['bg_card'],
-                                     fg=self.colors['primary'])
-                placeholder.pack()
-            except:
-                pass
+            logger.error(f"Ошибка загрузки изображения приложения: {e}", exc_info=True)
+            # При ошибке просто не показываем изображение
         
-        # Описание программы справа от изображения
+        # Название программы под изображением (по центру)
+        app_name_label = tk.Label(left_inner,
+                                 text="Ренейм+",
+                                 font=('Robot', 20, 'bold'),
+                                 bg=self.colors['bg_card'],
+                                 fg=self.colors['primary'])
+        app_name_label.pack(anchor=tk.CENTER, pady=(0, 5))
+        
+        # Версия программы под названием (по центру)
+        version_label = tk.Label(left_inner,
+                                text=f"Версия {APP_VERSION}",
+                                font=('Robot', 10),
+                                bg=self.colors['bg_card'],
+                                fg=self.colors['text_secondary'])
+        version_label.pack(anchor=tk.CENTER)
+        
+        # Правая часть: описание программы
         desc_frame = tk.Frame(about_content_frame, bg=self.colors['bg_card'])
         desc_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         
@@ -3021,7 +3136,21 @@ class FileRenamerApp:
 предпросмотр изменений перед применением, удобный интерфейс с поддержкой Drag & Drop, 
 возможность перестановки файлов в списке и многое другое.
 
-Программа поможет вам быстро и эффективно организовать ваши файлы."""
+Программа поможет вам быстро и эффективно организовать ваши файлы.
+
+Используемые библиотеки:
+• Python 3 - основной язык программирования
+• Tkinter - графический интерфейс
+• tkinterdnd2 - поддержка Drag & Drop
+• Pillow (PIL) - работа с изображениями
+• python-docx - работа с документами Word
+• pydub - конвертация аудио
+• moviepy - конвертация видео
+• pywin32/comtypes - работа с COM (Windows)
+• docx2pdf - конвертация DOCX в PDF
+• pdf2docx - конвертация PDF в DOCX
+• pystray - системный трей
+• и другие библиотеки для расширенной функциональности"""
         
         desc_label = tk.Label(desc_frame, 
                               text=desc_text,
@@ -3102,18 +3231,26 @@ class FileRenamerApp:
         vk_frame = tk.Frame(social_card, bg=self.colors['bg_card'])
         vk_frame.pack(anchor=tk.W, fill=tk.X, pady=(0, 3))
         
-        # Иконка VK
+        # Иконка VK - сохраняем в список для предотвращения удаления
+        if not hasattr(self, '_about_icons'):
+            self._about_icons = []
         try:
             vk_icon_path = os.path.join(os.path.dirname(__file__), "materials", "icon", "ВКонтакте.png")
             if os.path.exists(vk_icon_path) and HAS_PIL:
                 vk_img = Image.open(vk_icon_path)
-                vk_img = vk_img.resize((16, 16), Image.Resampling.LANCZOS)
+                vk_img = vk_img.resize((24, 24), Image.Resampling.LANCZOS)
                 vk_photo = ImageTk.PhotoImage(vk_img)
-                vk_icon_label = tk.Label(vk_frame, image=vk_photo, bg=self.colors['bg_card'])
-                vk_icon_label.image = vk_photo
-                vk_icon_label.pack(side=tk.LEFT, padx=(0, 4))
+                self._about_icons.append(vk_photo)  # Сохраняем в список
+                vk_icon_label = tk.Label(vk_frame, image=vk_photo, bg=self.colors['bg_card'], cursor='hand2')
+                vk_icon_label.pack(side=tk.LEFT, padx=(0, 8))
+                vk_icon_label.bind("<Button-1>", open_vk_social)  # Делаем иконку кликабельной
+            else:
+                if not HAS_PIL:
+                    logger.warning("PIL (Pillow) не установлен, иконка VK не может быть загружена")
+                else:
+                    logger.warning(f"Иконка VK не найдена: {vk_icon_path}")
         except Exception as e:
-            logger.debug(f"Ошибка загрузки иконки VK: {e}")
+            logger.error(f"Ошибка загрузки иконки VK: {e}", exc_info=True)
         
         vk_label = tk.Label(vk_frame, 
                            text="ВКонтакте",
@@ -3132,18 +3269,24 @@ class FileRenamerApp:
         tg_frame = tk.Frame(social_card, bg=self.colors['bg_card'])
         tg_frame.pack(anchor=tk.W, fill=tk.X)
         
-        # Иконка Telegram
+        # Иконка Telegram - сохраняем в список
         try:
             tg_icon_path = os.path.join(os.path.dirname(__file__), "materials", "icon", "Telegram.png")
             if os.path.exists(tg_icon_path) and HAS_PIL:
                 tg_img = Image.open(tg_icon_path)
-                tg_img = tg_img.resize((16, 16), Image.Resampling.LANCZOS)
+                tg_img = tg_img.resize((24, 24), Image.Resampling.LANCZOS)
                 tg_photo = ImageTk.PhotoImage(tg_img)
-                tg_icon_label = tk.Label(tg_frame, image=tg_photo, bg=self.colors['bg_card'])
-                tg_icon_label.image = tg_photo
-                tg_icon_label.pack(side=tk.LEFT, padx=(0, 4))
+                self._about_icons.append(tg_photo)  # Сохраняем в список
+                tg_icon_label = tk.Label(tg_frame, image=tg_photo, bg=self.colors['bg_card'], cursor='hand2')
+                tg_icon_label.pack(side=tk.LEFT, padx=(0, 8))
+                tg_icon_label.bind("<Button-1>", open_tg_channel)  # Делаем иконку кликабельной
+            else:
+                if not HAS_PIL:
+                    logger.warning("PIL (Pillow) не установлен, иконка Telegram не может быть загружена")
+                else:
+                    logger.warning(f"Иконка Telegram не найдена: {tg_icon_path}")
         except Exception as e:
-            logger.debug(f"Ошибка загрузки иконки Telegram: {e}")
+            logger.error(f"Ошибка загрузки иконки Telegram: {e}", exc_info=True)
         
         tg_label = tk.Label(tg_frame, 
                            text="Telegram",
@@ -3167,18 +3310,24 @@ class FileRenamerApp:
         github_frame = tk.Frame(github_card, bg=self.colors['bg_card'])
         github_frame.pack(anchor=tk.W, fill=tk.X)
         
-        # Иконка GitHub
+        # Иконка GitHub - сохраняем в список
         try:
             github_icon_path = os.path.join(os.path.dirname(__file__), "materials", "icon", "GitHUB.png")
             if os.path.exists(github_icon_path) and HAS_PIL:
                 github_img = Image.open(github_icon_path)
-                github_img = github_img.resize((16, 16), Image.Resampling.LANCZOS)
+                github_img = github_img.resize((24, 24), Image.Resampling.LANCZOS)
                 github_photo = ImageTk.PhotoImage(github_img)
-                github_icon_label = tk.Label(github_frame, image=github_photo, bg=self.colors['bg_card'])
-                github_icon_label.image = github_photo
-                github_icon_label.pack(side=tk.LEFT, padx=(0, 4))
+                self._about_icons.append(github_photo)  # Сохраняем в список
+                github_icon_label = tk.Label(github_frame, image=github_photo, bg=self.colors['bg_card'], cursor='hand2')
+                github_icon_label.pack(side=tk.LEFT, padx=(0, 8))
+                github_icon_label.bind("<Button-1>", open_github)  # Делаем иконку кликабельной
+            else:
+                if not HAS_PIL:
+                    logger.warning("PIL (Pillow) не установлен, иконка GitHub не может быть загружена")
+                else:
+                    logger.warning(f"Иконка GitHub не найдена: {github_icon_path}")
         except Exception as e:
-            logger.debug(f"Ошибка загрузки иконки GitHub: {e}")
+            logger.error(f"Ошибка загрузки иконки GitHub: {e}", exc_info=True)
         
         github_label = tk.Label(github_frame, 
                                text="GitHub",
@@ -3230,7 +3379,7 @@ class FileRenamerApp:
         
         # Содержимое поддержки без скроллбара
         content_frame = tk.Frame(support_tab, bg=self.colors['bg_main'])
-        content_frame.grid(row=0, column=0, sticky="nsew", padx=40, pady=40)
+        content_frame.grid(row=0, column=0, sticky="nsew", padx=20, pady=20)
         content_frame.columnconfigure(0, weight=1)
         support_tab.rowconfigure(0, weight=1)
         support_tab.columnconfigure(0, weight=1)
@@ -3387,7 +3536,7 @@ class FileRenamerApp:
             
             all_fields = sorted(list(common_fields)) if common_fields else []
         
-        # Сначала создаем чекбокс "Удалить все метаданные" в начале списка (только если его еще нет)
+        # Инициализируем переменную для "Удалить все метаданные" если еще нет
         if not hasattr(self, 'metadata_remove_all_var'):
             self.metadata_remove_all_var = tk.BooleanVar(value=False)
         
@@ -3402,7 +3551,29 @@ class FileRenamerApp:
                 except:
                     pass
         
+        # Создаем чекбоксы для доступных метаданных (сначала обычные чекбоксы)
+        for field in all_fields:
+            var = tk.BooleanVar(value=True)
+            self.metadata_checkbox_vars[field] = var
+            field_name = self.metadata_field_names.get(field, field)
+            checkbox = tk.Checkbutton(
+                self.metadata_checkboxes_frame,
+                text=field_name,
+                variable=var,
+                bg=self.colors['bg_card'],
+                fg=self.colors['text_primary'],
+                font=('Robot', 9),
+                anchor='w'
+            )
+            checkbox.pack(anchor=tk.W, pady=2, padx=5)
+            self.metadata_checkboxes[field] = checkbox
+        
+        # В конце списка создаем чекбокс "Удалить все метаданные" (только если его еще нет)
         if not remove_all_exists:
+            # Разделитель перед "Удалить все"
+            separator = ttk.Separator(self.metadata_checkboxes_frame, orient='horizontal')
+            separator.pack(fill=tk.X, pady=(10, 10))
+            
             def on_remove_all_toggle():
                 """Обработчик изменения галочки 'Удалить все метаданные'"""
                 if self.metadata_remove_all_var.get():
@@ -3422,30 +3593,14 @@ class FileRenamerApp:
                 activeforeground=self.colors['primary']
             )
             remove_all_checkbox.pack(anchor=tk.W, pady=(0, 10))
-            
-            # Разделитель
-            separator = ttk.Separator(self.metadata_checkboxes_frame, orient='horizontal')
-            separator.pack(fill=tk.X, pady=(0, 10))
         
-        # Создаем чекбоксы для доступных метаданных
-        for field in all_fields:
-            var = tk.BooleanVar(value=True)
-            self.metadata_checkbox_vars[field] = var
-            field_name = self.metadata_field_names.get(field, field)
-            checkbox = tk.Checkbutton(
-                self.metadata_checkboxes_frame,
-                text=field_name,
-                variable=var,
-                bg=self.colors['bg_card'],
-                fg=self.colors['text_primary'],
-                font=('Robot', 9),
-                anchor='w'
-            )
-            checkbox.pack(anchor=tk.W, pady=2, padx=5)
-            self.metadata_checkboxes[field] = checkbox
+        # Обновляем scrollregion и видимость скроллбара
+        def update_after_checkboxes():
+            self.metadata_checkboxes_frame.master.update_idletasks()
+            if hasattr(self, '_finalize_metadata_scroll'):
+                self._finalize_metadata_scroll()
         
-        # Обновляем scrollregion
-        self.root.after(50, lambda: self.metadata_checkboxes_frame.master.update_idletasks())
+        self.root.after(50, update_after_checkboxes)
     
     def _remove_selected_metadata_files(self):
         """Удаление метаданных из выбранных файлов"""
@@ -4482,7 +4637,7 @@ class FileRenamerApp:
         
         content_frame = scrollable_frame
         content_frame.columnconfigure(0, weight=1)
-        scrollable_frame.configure(padx=40, pady=40)
+        scrollable_frame.configure(padx=20, pady=20)
         
         # Заголовок
         title_label = tk.Label(content_frame, text="Настройки", 
@@ -4501,7 +4656,7 @@ class FileRenamerApp:
         auto_apply_check = tk.Checkbutton(general_frame, 
                                          text="Автоматически применять методы при добавлении",
                                          variable=auto_apply_var,
-                                         font=('Robot', 10),
+                                         font=('Robot', 11),
                                          bg=self.colors['bg_card'],
                                          fg=self.colors['text_primary'],
                                          selectcolor='white',
@@ -4514,7 +4669,7 @@ class FileRenamerApp:
         show_warnings_check = tk.Checkbutton(general_frame, 
                                             text="Показывать предупреждения перед переименованием",
                                             variable=show_warnings_var,
-                                            font=('Robot', 10),
+                                            font=('Robot', 11),
                                             bg=self.colors['bg_card'],
                                             fg=self.colors['text_primary'],
                                             selectcolor='white',
@@ -4550,7 +4705,7 @@ class FileRenamerApp:
         backup_check = tk.Checkbutton(files_frame, 
                                       text="Создавать резервные копии перед переименованием",
                                       variable=backup_var,
-                                      font=('Robot', 10),
+                                      font=('Robot', 11),
                                       bg=self.colors['bg_card'],
                                       fg=self.colors['text_primary'],
                                       selectcolor='white',
@@ -4842,7 +4997,7 @@ class FileRenamerApp:
                 variable=theme_var,
                 value='light',
                 command=on_theme_change,
-                font=('Robot', 9),
+                font=('Robot', 11),
                 bg=self.colors['bg_card'],
                 fg=self.colors['text_primary'],
                 selectcolor=self.colors['bg_card'],
@@ -4857,7 +5012,7 @@ class FileRenamerApp:
                 variable=theme_var,
                 value='dark',
                 command=on_theme_change,
-                font=('Robot', 9),
+                font=('Robot', 11),
                 bg=self.colors['bg_card'],
                 fg=self.colors['text_primary'],
                 selectcolor=self.colors['bg_card'],
@@ -4901,7 +5056,7 @@ class FileRenamerApp:
                 text="Создавать резервные копии перед переименованием",
                 variable=backup_var,
                 command=on_backup_change,
-                font=('Robot', 9),
+                font=('Robot', 11),
                 bg=self.colors['bg_card'],
                 fg=self.colors['text_primary'],
                 selectcolor=self.colors['bg_card'],
@@ -4963,7 +5118,7 @@ class FileRenamerApp:
         
         content_frame = scrollable_frame
         content_frame.columnconfigure(0, weight=1)
-        scrollable_frame.configure(padx=40, pady=40)
+        scrollable_frame.configure(padx=20, pady=20)
         
         # Иконка программы
         try:
@@ -5088,7 +5243,7 @@ class FileRenamerApp:
         
         # Содержимое поддержки без скроллбара
         content_frame = tk.Frame(support_tab, bg=self.colors['bg_main'])
-        content_frame.grid(row=0, column=0, sticky="nsew", padx=40, pady=40)
+        content_frame.grid(row=0, column=0, sticky="nsew", padx=20, pady=20)
         content_frame.columnconfigure(0, weight=1)
         support_tab.rowconfigure(0, weight=1)
         support_tab.columnconfigure(0, weight=1)
@@ -7724,8 +7879,8 @@ def main():
             log_callback=lambda msg: logger.info(msg)
         )
         
-        # Проверяем и устанавливаем библиотеки с показом окна установки
-        # Показываем окно только если есть библиотеки для установки
+        # Проверяем и устанавливаем библиотеки
+        # Окно установки показывается только при первом запуске (внутри check_and_install)
         # Выполняем с небольшой задержкой, чтобы окно успело инициализироваться
         root.after(500, lambda: library_manager.check_and_install(install_optional=True, silent=False))
     except Exception as e:

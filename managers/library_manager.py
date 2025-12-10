@@ -1,4 +1,8 @@
-"""Модуль для управления установкой библиотек."""
+"""Модуль для управления установкой библиотек.
+
+Обеспечивает автоматическую проверку, установку и управление зависимостями приложения.
+Поддерживает кэширование результатов проверки для оптимизации производительности.
+"""
 
 import json
 import logging
@@ -17,7 +21,19 @@ logger = logging.getLogger(__name__)
 
 
 class LibraryManager:
-    """Класс для управления установкой библиотек."""
+    """Класс для управления установкой библиотек.
+    
+    Отвечает за:
+    - Проверку наличия обязательных и опциональных библиотек
+    - Автоматическую установку недостающих библиотек
+    - Кэширование результатов проверки
+    - Управление зависимостями Windows-специфичных библиотек
+    
+    Attributes:
+        REQUIRED_LIBRARIES: Словарь обязательных библиотек {имя_пакета: имя_импорта}
+        OPTIONAL_LIBRARIES: Словарь опциональных библиотек
+        WINDOWS_OPTIONAL_LIBRARIES: Словарь Windows-специфичных библиотек
+    """
     
     # Обязательные библиотеки (нужны для базовой функциональности)
     REQUIRED_LIBRARIES = {
@@ -60,6 +76,39 @@ class LibraryManager:
         )
         # Время жизни кэша проверки библиотек (в днях)
         self.cache_ttl_days = 7
+        # Определяем, запущена ли программа в виртуальном окружении
+        self.in_venv = self._is_in_venv()
+    
+    def _is_in_venv(self) -> bool:
+        """Проверка, запущена ли программа в виртуальном окружении.
+        
+        Returns:
+            True если в виртуальном окружении, False иначе
+        """
+        # Проверяем через sys.prefix (в venv он отличается от base_prefix)
+        if hasattr(sys, 'base_prefix'):
+            return sys.prefix != sys.base_prefix
+        # Альтернативная проверка через переменную окружения
+        return bool(os.environ.get('VIRTUAL_ENV'))
+    
+    def _get_pip_install_args(self, package: str, upgrade: bool = True) -> List[str]:
+        """Получение аргументов для команды pip install.
+        
+        Args:
+            package: Имя пакета для установки
+            upgrade: Обновлять ли пакет если уже установлен
+            
+        Returns:
+            Список аргументов для pip install
+        """
+        args = [sys.executable, "-m", "pip", "install", package]
+        if upgrade:
+            args.append("--upgrade")
+        # Используем --user только если НЕ в виртуальном окружении
+        if not self.in_venv:
+            args.append("--user")
+        args.append("--no-warn-script-location")
+        return args
     
     def get_all_libraries(self) -> Dict[str, str]:
         """Получение всех библиотек для проверки.
@@ -135,7 +184,20 @@ class LibraryManager:
         Returns:
             Словарь с ключами 'required' и 'optional', содержащий списки отсутствующих библиотек
         """
+        # Обновляем sys.path для обнаружения установленных библиотек
+        try:
+            import site
+            user_site = site.getusersitepackages()
+            if user_site and user_site not in sys.path:
+                sys.path.insert(0, user_site)
+                site.addsitedir(user_site)
+        except Exception:
+            pass
+        
         cache_data = self._get_cache_data()
+        
+        # Получаем список установленных библиотек из кэша
+        installed_libs = set(cache_data.get('installed', []))
         
         # Если кэш валиден и мы хотим его использовать
         if use_cache and self._is_cache_valid(cache_data) and 'library_status' in cache_data:
@@ -143,12 +205,24 @@ class LibraryManager:
             cached_status = cache_data['library_status']
             
             # Проверяем только те библиотеки, которые были отмечены как отсутствующие
-            # Это ускоряет проверку, так как мы не проверяем все библиотеки заново
+            # Но исключаем те, которые уже помечены как установленные
             missing_required = []
             missing_optional = []
             
             # Проверяем обязательные библиотеки из кэша
             for lib_name in cached_status.get('missing_required', []):
+                # Пропускаем библиотеки, которые уже помечены как установленные
+                if lib_name in installed_libs:
+                    # Но проверяем, действительно ли они установлены
+                    import_name = self.REQUIRED_LIBRARIES.get(lib_name)
+                    if import_name and self._check_library(lib_name, import_name):
+                        # Библиотека действительно установлена, оставляем в списке установленных
+                        continue
+                    else:
+                        # Библиотека помечена как установленная, но не найдена - удаляем из списка
+                        installed_libs.discard(lib_name)
+                        missing_required.append(lib_name)
+                        continue
                 import_name = self.REQUIRED_LIBRARIES.get(lib_name)
                 if import_name and not self._check_library(lib_name, import_name):
                     missing_required.append(lib_name)
@@ -156,10 +230,28 @@ class LibraryManager:
             if check_optional:
                 # Проверяем опциональные библиотеки из кэша
                 for lib_name in cached_status.get('missing_optional', []):
+                    # Пропускаем библиотеки, которые уже помечены как установленные
+                    if lib_name in installed_libs:
+                        # Но проверяем, действительно ли они установлены
+                        import_name = (self.OPTIONAL_LIBRARIES.get(lib_name) or 
+                                     (self.WINDOWS_OPTIONAL_LIBRARIES.get(lib_name) if sys.platform == 'win32' else None))
+                        if import_name and self._check_library(lib_name, import_name):
+                            # Библиотека действительно установлена, оставляем в списке установленных
+                            continue
+                        else:
+                            # Библиотека помечена как установленная, но не найдена - удаляем из списка
+                            installed_libs.discard(lib_name)
+                            missing_optional.append(lib_name)
+                            continue
                     import_name = (self.OPTIONAL_LIBRARIES.get(lib_name) or 
                                  (self.WINDOWS_OPTIONAL_LIBRARIES.get(lib_name) if sys.platform == 'win32' else None))
                     if import_name and not self._check_library(lib_name, import_name):
                         missing_optional.append(lib_name)
+            
+            # Обновляем список установленных библиотек, если что-то изменилось
+            if installed_libs != set(cache_data.get('installed', [])):
+                cache_data['installed'] = list(installed_libs)
+                self._save_cache_data(cache_data)
             
             return {
                 'required': missing_required,
@@ -172,20 +264,45 @@ class LibraryManager:
         
         # Проверяем обязательные библиотеки
         for lib_name, import_name in self.REQUIRED_LIBRARIES.items():
-            if not self._check_library(lib_name, import_name):
+            # Пропускаем библиотеки, которые уже помечены как установленные
+            if lib_name in installed_libs:
+                # Но все равно проверяем, действительно ли они установлены
+                if not self._check_library(lib_name, import_name):
+                    # Если библиотека помечена как установленная, но не найдена, удаляем из списка
+                    installed_libs.discard(lib_name)
+                    missing_required.append(lib_name)
+            elif not self._check_library(lib_name, import_name):
                 missing_required.append(lib_name)
         
         if check_optional:
             # Проверяем опциональные библиотеки
             for lib_name, import_name in self.OPTIONAL_LIBRARIES.items():
-                if not self._check_library(lib_name, import_name):
+                # Пропускаем библиотеки, которые уже помечены как установленные
+                if lib_name in installed_libs:
+                    # Но все равно проверяем, действительно ли они установлены
+                    if not self._check_library(lib_name, import_name):
+                        # Если библиотека помечена как установленная, но не найдена, удаляем из списка
+                        installed_libs.discard(lib_name)
+                        missing_optional.append(lib_name)
+                elif not self._check_library(lib_name, import_name):
                     missing_optional.append(lib_name)
             
             # Проверяем Windows-специфичные библиотеки
             if sys.platform == 'win32':
                 for lib_name, import_name in self.WINDOWS_OPTIONAL_LIBRARIES.items():
-                    if not self._check_library(lib_name, import_name):
+                    # Пропускаем библиотеки, которые уже помечены как установленные
+                    if lib_name in installed_libs:
+                        # Но все равно проверяем, действительно ли они установлены
+                        if not self._check_library(lib_name, import_name):
+                            # Если библиотека помечена как установленная, но не найдена, удаляем из списка
+                            installed_libs.discard(lib_name)
+                            missing_optional.append(lib_name)
+                    elif not self._check_library(lib_name, import_name):
                         missing_optional.append(lib_name)
+        
+        # Обновляем список установленных библиотек, если что-то изменилось
+        if installed_libs != set(cache_data.get('installed', [])):
+            cache_data['installed'] = list(installed_libs)
         
         # Сохраняем результаты в кэш
         cache_data['last_check'] = datetime.now().isoformat()
@@ -220,6 +337,15 @@ class LibraryManager:
                     site.addsitedir(user_site)
             except Exception:
                 pass  # Игнорируем ошибки обновления пути
+            
+            # Очищаем кэш импортов для этой библиотеки перед проверкой
+            # Это помогает найти библиотеки, которые были только что установлены
+            modules_to_remove = [m for m in list(sys.modules.keys()) if m.startswith(import_name)]
+            for m in modules_to_remove:
+                try:
+                    del sys.modules[m]
+                except KeyError:
+                    pass
             
             # Специальная обработка для win32com
             if import_name == 'win32com':
@@ -318,49 +444,113 @@ class LibraryManager:
         """Сохранение списка установленных библиотек.
         
         Args:
-            libraries: Список установленных библиотек
+            libraries: Список только что установленных библиотек (добавляются к существующим)
         """
+        # Обновляем sys.path для обнаружения новых модулей
+        try:
+            import site
+            user_site = site.getusersitepackages()
+            if user_site and user_site not in sys.path:
+                sys.path.insert(0, user_site)
+                site.addsitedir(user_site)
+        except Exception:
+            pass
+        
         cache_data = self._get_cache_data()
-        cache_data['installed'] = libraries
+        # Получаем уже установленные библиотеки из кэша
+        existing_installed = cache_data.get('installed', [])
+        logger.debug(f"save_installed_libraries: новые библиотеки={libraries}, существующие={existing_installed}")
+        
+        # Объединяем старые и новые установленные библиотеки
+        all_installed = list(set(existing_installed + libraries))
+        logger.debug(f"save_installed_libraries: объединенный список={all_installed}")
+        
+        # Проверяем все библиотеки реально и обновляем список
+        all_libs_dict = self.get_all_libraries()
+        actually_installed = []
+        
+        # Очищаем кэш импортов для только что установленных библиотек
+        for lib_name in libraries:
+            import_name = (all_libs_dict.get(lib_name) or 
+                         self.REQUIRED_LIBRARIES.get(lib_name) or
+                         self.OPTIONAL_LIBRARIES.get(lib_name) or
+                         (self.WINDOWS_OPTIONAL_LIBRARIES.get(lib_name) if sys.platform == 'win32' else None))
+            if import_name:
+                # Очищаем кэш импортов для этой библиотеки
+                modules_to_remove = [m for m in list(sys.modules.keys()) if m.startswith(import_name)]
+                for m in modules_to_remove:
+                    try:
+                        del sys.modules[m]
+                    except KeyError:
+                        pass
+        
+        # Небольшая задержка для обновления путей Python
+        time.sleep(0.1)
+        
+        # Проверяем все библиотеки из объединенного списка
+        for lib_name in all_installed:
+            import_name = (all_libs_dict.get(lib_name) or 
+                         self.REQUIRED_LIBRARIES.get(lib_name) or
+                         self.OPTIONAL_LIBRARIES.get(lib_name) or
+                         (self.WINDOWS_OPTIONAL_LIBRARIES.get(lib_name) if sys.platform == 'win32' else None))
+            if import_name and self._check_library(lib_name, import_name):
+                actually_installed.append(lib_name)
+        
+        # Также проверяем все остальные библиотеки, которые могут быть установлены
+        for lib_name, import_name in self.REQUIRED_LIBRARIES.items():
+            if lib_name not in actually_installed and self._check_library(lib_name, import_name):
+                actually_installed.append(lib_name)
+        
+        for lib_name, import_name in self.OPTIONAL_LIBRARIES.items():
+            if lib_name not in actually_installed and self._check_library(lib_name, import_name):
+                actually_installed.append(lib_name)
+        
+        if sys.platform == 'win32':
+            for lib_name, import_name in self.WINDOWS_OPTIONAL_LIBRARIES.items():
+                if lib_name not in actually_installed and self._check_library(lib_name, import_name):
+                    actually_installed.append(lib_name)
+        
+        # Сохраняем проверенный список установленных библиотек
+        cache_data['installed'] = actually_installed
+        
         # Инвалидируем кэш проверки, так как библиотеки изменились
         if 'last_check' in cache_data:
             del cache_data['last_check']
         if 'library_status' in cache_data:
             del cache_data['library_status']
-        # Обновляем статус библиотек в кэше - помечаем установленные как найденные
-        if libraries:
-            # Получаем все библиотеки для проверки
-            all_libs_dict = self.get_all_libraries()
-            missing_required = []
-            missing_optional = []
-            
-            # Проверяем обязательные библиотеки
-            for lib_name, import_name in self.REQUIRED_LIBRARIES.items():
-                if lib_name not in libraries:
-                    if not self._check_library(lib_name, import_name):
-                        missing_required.append(lib_name)
-            
-            # Проверяем опциональные библиотеки
-            for lib_name, import_name in self.OPTIONAL_LIBRARIES.items():
-                if lib_name not in libraries:
+        
+        # Обновляем статус библиотек в кэше
+        missing_required = []
+        missing_optional = []
+        
+        # Проверяем обязательные библиотеки
+        for lib_name, import_name in self.REQUIRED_LIBRARIES.items():
+            if lib_name not in actually_installed:
+                if not self._check_library(lib_name, import_name):
+                    missing_required.append(lib_name)
+        
+        # Проверяем опциональные библиотеки
+        for lib_name, import_name in self.OPTIONAL_LIBRARIES.items():
+            if lib_name not in actually_installed:
+                if not self._check_library(lib_name, import_name):
+                    missing_optional.append(lib_name)
+        
+        # Проверяем Windows-специфичные библиотеки
+        if sys.platform == 'win32':
+            for lib_name, import_name in self.WINDOWS_OPTIONAL_LIBRARIES.items():
+                if lib_name not in actually_installed:
                     if not self._check_library(lib_name, import_name):
                         missing_optional.append(lib_name)
-            
-            # Проверяем Windows-специфичные библиотеки
-            if sys.platform == 'win32':
-                for lib_name, import_name in self.WINDOWS_OPTIONAL_LIBRARIES.items():
-                    if lib_name not in libraries:
-                        if not self._check_library(lib_name, import_name):
-                            missing_optional.append(lib_name)
-            
-            # Сохраняем актуальный статус в кэш
-            cache_data['library_status'] = {
-                'missing_required': missing_required,
-                'missing_optional': missing_optional
-            }
-            cache_data['last_check'] = datetime.now().isoformat()
+        
+        # Сохраняем актуальный статус в кэш
+        cache_data['library_status'] = {
+            'missing_required': missing_required,
+            'missing_optional': missing_optional
+        }
+        cache_data['last_check'] = datetime.now().isoformat()
         
         self._save_cache_data(cache_data)
+        logger.info(f"Сохранен список установленных библиотек: {len(actually_installed)} библиотек: {actually_installed}")
     
     def invalidate_cache(self):
         """Инвалидация кэша проверки библиотек."""
@@ -369,6 +559,9 @@ class LibraryManager:
             del cache_data['last_check']
         if 'library_status' in cache_data:
             del cache_data['library_status']
+        # Очищаем список установленных библиотек, чтобы принудительно проверить все заново
+        if 'installed' in cache_data:
+            del cache_data['installed']
         self._save_cache_data(cache_data)
     
     def uninstall_library(self, lib_name: str) -> Tuple[bool, str]:
@@ -425,15 +618,21 @@ class LibraryManager:
                 return False, "Недопустимое имя библиотеки"
             
             # Специальная обработка для pdf2docx
+            numpy_installed = False
             if lib_name == 'pdf2docx':
                 try:
                     import numpy  # type: ignore
+                    numpy_installed = True
                     logger.debug("numpy уже установлен")
                 except ImportError:
-                    # Устанавливаем numpy сначала
+                    # Устанавливаем numpy сначала, используя только предкомпилированные пакеты
                     logger.info("Установка numpy (зависимость для pdf2docx)...")
+                    numpy_cmd = self._get_pip_install_args('numpy')
+                    # Добавляем --only-binary :all: чтобы использовать только wheels
+                    numpy_cmd.insert(-1, '--only-binary')
+                    numpy_cmd.insert(-1, ':all:')
                     numpy_result = subprocess.run(
-                        [sys.executable, '-m', 'pip', 'install', 'numpy', '--user', '--upgrade', '--no-warn-script-location'],
+                        numpy_cmd,
                         capture_output=True,
                         text=True,
                         timeout=300
@@ -450,15 +649,25 @@ class LibraryManager:
                                 key_errors.append(line.strip())
                         detailed_error = '\n'.join(key_errors[:5]) if key_errors else numpy_error[:400]
                         return False, f"Не удалось установить зависимость numpy:\n{detailed_error}\n\nПопробуйте установить вручную:\npip install --user numpy\n\nЕсли ошибка связана с компиляцией, используйте предварительно скомпилированные пакеты или установите Visual Studio Build Tools."
+                    numpy_installed = True
             
             logger.info(f"Установка библиотеки {lib_name}...")
             
             # Для pdf2docx используем более длинный таймаут и дополнительные опции
-            install_cmd = [sys.executable, "-m", "pip", "install", lib_name, "--user", "--upgrade", "--no-warn-script-location"]
+            install_cmd = self._get_pip_install_args(lib_name)
             
             # Для pdf2docx может потребоваться установка предварительно скомпилированных пакетов
             if lib_name == 'pdf2docx':
-                # Добавляем опции для более надежной установки
+                # Пробуем установить только из wheels, но если это не удастся, пропускаем установку
+                # pdf2docx не критичен для работы программы
+                install_cmd.insert(-1, '--only-binary')
+                install_cmd.insert(-1, ':all:')
+                if numpy_installed:
+                    # Если numpy уже установлен, также используем --no-deps
+                    install_cmd.insert(-1, '--no-deps')
+                    logger.info("Установка pdf2docx только из wheels без зависимостей (numpy уже установлен)")
+                else:
+                    logger.info("Установка pdf2docx только из wheels (предкомпилированные пакеты)")
                 install_cmd.extend(['--no-cache-dir'])  # Избегаем проблем с кэшем
             
             timeout_value = 900 if lib_name == 'pdf2docx' else (600 if lib_name in ('moviepy', 'pydub') else 300)
@@ -470,8 +679,42 @@ class LibraryManager:
                 timeout=timeout_value
             )
             
+            # Специальная обработка для pdf2docx - если установка не удалась из-за компиляции,
+            # пропускаем её с предупреждением (библиотека не критична)
+            if lib_name == 'pdf2docx' and result.returncode != 0:
+                error_msg = result.stderr if result.stderr else result.stdout or ""
+                if 'compiler' in error_msg.lower() or 'building wheel' in error_msg.lower() or 'meson' in error_msg.lower() or 'numpy' in error_msg.lower():
+                    logger.warning(f"Не удалось установить {lib_name} из-за проблем с компиляцией зависимостей. "
+                                 f"Библиотека не критична для работы программы. "
+                                 f"Вы можете установить её вручную позже.")
+                    return True, f"pdf2docx не установлен (требует компилятор для зависимостей). " \
+                               f"Библиотека не критична. Вы можете установить её вручную: pip install pdf2docx"
+            
             if result.returncode == 0:
                 logger.info(f"{lib_name} успешно установлена")
+                
+                # Специальная обработка для pywin32 - запускаем post-install скрипт
+                if lib_name == 'pywin32':
+                    try:
+                        logger.info("Запуск post-install скрипта для pywin32...")
+                        post_install_script = os.path.join(
+                            sys.prefix, 'Scripts', 'pywin32_postinstall.py'
+                        )
+                        if os.path.exists(post_install_script):
+                            post_result = subprocess.run(
+                                [sys.executable, post_install_script, '-install'],
+                                capture_output=True,
+                                text=True,
+                                timeout=60
+                            )
+                            if post_result.returncode == 0:
+                                logger.info("pywin32 post-install скрипт выполнен успешно")
+                            else:
+                                logger.warning(f"pywin32 post-install скрипт завершился с ошибкой: {post_result.stderr[:200]}")
+                        else:
+                            logger.debug("pywin32_postinstall.py не найден, пропускаем")
+                    except Exception as e:
+                        logger.warning(f"Не удалось запустить post-install скрипт для pywin32: {e}")
                 
                 # Обновляем sys.path для обнаружения новых модулей
                 try:
@@ -589,35 +832,10 @@ class LibraryManager:
             # Сначала проверяем библиотеки, которые были помечены как установленные
             installed_libs = self.get_installed_libraries()
             
-            # Если есть библиотеки в кэше как установленные, но это не первый запуск,
-            # делаем полную проверку без кэша, чтобы убедиться что они действительно установлены
-            if installed_libs and not self.is_first_run() and not force_check:
-                logger.debug(f"Проверка ранее установленных библиотек: {', '.join(installed_libs)}")
-                # Делаем полную проверку без кэша для точности
-                missing = self.check_libraries(check_optional=install_optional, use_cache=False)
-            else:
-                # Используем кэш только если не принудительная проверка
-                missing = self.check_libraries(check_optional=install_optional, use_cache=not force_check)
-            
-            missing_required = missing.get('required', [])
-            missing_optional = missing.get('optional', [])
-            
-            # Всегда устанавливаем обязательные библиотеки
-            all_missing = missing_required.copy()
-            
-            # Добавляем опциональные, если нужно
-            if install_optional:
-                all_missing.extend(missing_optional)
-            
-            # Разделяем на обязательные и опциональные для отображения
-            # Теперь используем реальную проверку, а не кэш
-            required_to_install = missing_required
-            optional_to_install = missing_optional if install_optional else []
-            
-            # Если библиотеки были в кэше как установленные, но проверка их не нашла,
-            # обновляем кэш - удаляем их из списка установленных
+            # Проверяем библиотеки из списка установленных, чтобы убедиться что они действительно установлены
+            actually_installed = []
             if installed_libs:
-                actually_installed = []
+                logger.debug(f"Проверка ранее установленных библиотек: {', '.join(installed_libs)}")
                 all_libs_dict = self.get_all_libraries()
                 for lib in installed_libs:
                     import_name = (all_libs_dict.get(lib) or 
@@ -626,17 +844,34 @@ class LibraryManager:
                                  (self.WINDOWS_OPTIONAL_LIBRARIES.get(lib) if sys.platform == 'win32' else None))
                     if import_name and self._check_library(lib, import_name):
                         actually_installed.append(lib)
+                    else:
+                        logger.debug(f"Библиотека {lib} помечена как установленная, но не найдена при проверке")
                 
-                # Обновляем список установленных библиотек только реально установленными
+                # Обновляем список установленных библиотек, если что-то изменилось
                 if set(actually_installed) != set(installed_libs):
                     logger.info(f"Обновление кэша: найдено {len(actually_installed)} из {len(installed_libs)} библиотек")
                     self.save_installed_libraries(actually_installed)
-                    # Пересчитываем списки для установки
-                    required_to_install = [lib for lib in missing_required if lib not in actually_installed]
-                    optional_to_install = [lib for lib in missing_optional if lib not in actually_installed and install_optional]
-                    all_missing = required_to_install.copy()
-                    if install_optional:
-                        all_missing.extend(optional_to_install)
+            
+            # Делаем проверку всех библиотек
+            # Используем кэш только если не принудительная проверка и это не первый запуск
+            # и есть установленные библиотеки в кэше
+            use_cache = not force_check and not self.is_first_run() and len(installed_libs) > 0
+            logger.debug(f"Проверка библиотек: use_cache={use_cache}, installed_libs={len(installed_libs)}, actually_installed={len(actually_installed)}")
+            missing = self.check_libraries(check_optional=install_optional, use_cache=use_cache)
+            
+            missing_required = missing.get('required', [])
+            missing_optional = missing.get('optional', [])
+            
+            # Исключаем из списка отсутствующих библиотеки, которые действительно установлены
+            required_to_install = [lib for lib in missing_required if lib not in actually_installed]
+            optional_to_install = [lib for lib in missing_optional if lib not in actually_installed] if install_optional else []
+            
+            # Всегда устанавливаем обязательные библиотеки
+            all_missing = required_to_install.copy()
+            
+            # Добавляем опциональные, если нужно
+            if install_optional:
+                all_missing.extend(optional_to_install)
             
             if not all_missing:
                 # Если это первый запуск, показываем окно статуса
@@ -648,6 +883,11 @@ class LibraryManager:
                 else:
                     logger.info("Все необходимые библиотеки установлены")
                 return True
+            
+            # Если это не первый запуск, используем тихий режим (установка в фоне)
+            if not self.is_first_run():
+                silent = True
+                logger.info("Не первый запуск - установка библиотек в фоновом режиме")
             
             if silent:
                 # В тихом режиме устанавливаем автоматически в фоне
@@ -661,7 +901,7 @@ class LibraryManager:
                     ).start()
                 return True
             
-            # Показываем окно установки
+            # Показываем окно установки только при первом запуске
             self._show_install_window(required_to_install, optional_to_install)
             # После установки отмечаем первый запуск как завершенный
             self.mark_first_run_completed()
@@ -702,7 +942,7 @@ class LibraryManager:
                         try:
                             logger.info("Установка numpy (зависимость для pdf2docx)...")
                             numpy_result = subprocess.run(
-                                [sys.executable, '-m', 'pip', 'install', 'numpy', '--user', '--upgrade', '--quiet'],
+                                self._get_pip_install_args('numpy')[:-1] + ['--quiet', '--no-warn-script-location'],
                                 capture_output=True,
                                 text=True,
                                 timeout=300
@@ -719,12 +959,25 @@ class LibraryManager:
                 
                 # Установка библиотеки с зависимостями
                 # Используем --no-warn-script-location для уменьшения предупреждений
-                install_cmd = [sys.executable, '-m', 'pip', 'install', lib, '--user', '--upgrade', '--quiet', '--no-warn-script-location']
+                install_cmd = self._get_pip_install_args(lib)
+                install_cmd.insert(-1, '--quiet')  # Добавляем --quiet перед --no-warn-script-location
+                
+                # Специальная обработка для pdf2docx
+                if lib == 'pdf2docx':
+                    install_cmd.insert(-1, '--only-binary')
+                    install_cmd.insert(-1, ':all:')
+                    try:
+                        import numpy  # type: ignore
+                        install_cmd.insert(-1, '--no-deps')
+                    except ImportError:
+                        pass
                 
                 # Для некоторых библиотек добавляем дополнительные опции
                 if lib in ('moviepy', 'pydub'):
                     # Увеличиваем таймаут для больших библиотек
                     timeout = 600
+                elif lib == 'pdf2docx':
+                    timeout = 900
                 else:
                     timeout = 300
                 
@@ -734,6 +987,16 @@ class LibraryManager:
                     text=True,
                     timeout=timeout
                 )
+                
+                # Специальная обработка для pdf2docx - если установка не удалась из-за компиляции,
+                # пропускаем её с предупреждением (библиотека не критична)
+                if lib == 'pdf2docx' and result.returncode != 0:
+                    error_msg = result.stderr if result.stderr else result.stdout or ""
+                    if 'compiler' in error_msg.lower() or 'building wheel' in error_msg.lower() or 'meson' in error_msg.lower() or 'numpy' in error_msg.lower():
+                        logger.warning(f"Не удалось установить {lib} из-за проблем с компиляцией зависимостей. "
+                                     f"Библиотека не критична для работы программы. Пропускаем установку.")
+                        # Не считаем это ошибкой, просто пропускаем
+                        continue
                 
                 if result.returncode == 0:
                     logger.info(f"✓ {lib} установлен успешно")
@@ -1035,9 +1298,10 @@ class LibraryManager:
                     self.root.after(0, lambda: progress_window.update())
                     
                     # Специальная обработка для библиотек, которые могут требовать дополнительные зависимости
-                    install_cmd = [sys.executable, '-m', 'pip', 'install', lib, '--user', '--upgrade', '--no-warn-script-location']
+                    install_cmd = self._get_pip_install_args(lib)
                     
                     # Для pdf2docx может потребоваться numpy, устанавливаем его заранее
+                    numpy_installed = False
                     if lib == 'pdf2docx':
                         self.root.after(0, lambda: progress_text.insert(tk.END, f"Проверка зависимостей для {lib}...\n"))
                         self.root.after(0, lambda: progress_text.see(tk.END))
@@ -1046,20 +1310,26 @@ class LibraryManager:
                         # Пробуем установить numpy если его нет
                         try:
                             import numpy  # type: ignore
+                            numpy_installed = True
                         except ImportError:
                             try:
                                 self.root.after(0, lambda: progress_text.insert(tk.END, f"Установка numpy (зависимость для pdf2docx)...\n"))
                                 self.root.after(0, lambda: progress_text.see(tk.END))
                                 self.root.after(0, lambda: progress_window.update())
                                 
+                                # Используем --only-binary для numpy чтобы избежать компиляции
+                                numpy_cmd = self._get_pip_install_args('numpy')
+                                numpy_cmd.insert(-1, '--only-binary')
+                                numpy_cmd.insert(-1, ':all:')
                                 numpy_result = subprocess.run(
-                                    [sys.executable, '-m', 'pip', 'install', 'numpy', '--user', '--upgrade', '--no-warn-script-location'],
+                                    numpy_cmd,
                                     capture_output=True,
                                     text=True,
                                     timeout=300
                                 )
                                 if numpy_result.returncode == 0:
                                     self.root.after(0, lambda: progress_text.insert(tk.END, f"✓ numpy установлен как зависимость\n"))
+                                    numpy_installed = True
                                 else:
                                     numpy_error = numpy_result.stderr if numpy_result.stderr else numpy_result.stdout or "Неизвестная ошибка"
                                     # Извлекаем ключевые ошибки
@@ -1070,6 +1340,18 @@ class LibraryManager:
                             except Exception as numpy_e:
                                 self.root.after(0, lambda err=str(numpy_e)[:100]: progress_text.insert(tk.END, f"⚠ Предупреждение: ошибка установки numpy: {err}\n"))
                     
+                    # Для pdf2docx: всегда используем --only-binary :all: чтобы использовать только wheels
+                    if lib == 'pdf2docx':
+                        install_cmd.insert(-1, '--only-binary')
+                        install_cmd.insert(-1, ':all:')
+                        if numpy_installed:
+                            # Если numpy уже установлен, также используем --no-deps
+                            install_cmd.insert(-1, '--no-deps')
+                            self.root.after(0, lambda: progress_text.insert(tk.END, f"Установка pdf2docx только из wheels без зависимостей (numpy уже установлен)...\n"))
+                        else:
+                            self.root.after(0, lambda: progress_text.insert(tk.END, f"Установка pdf2docx только из wheels...\n"))
+                        install_cmd.extend(['--no-cache-dir'])
+                    
                     # Увеличиваем таймаут для тяжелых библиотек
                     timeout_value = 600 if lib in ('pdf2docx', 'moviepy', 'pydub') else 300
                     
@@ -1079,6 +1361,17 @@ class LibraryManager:
                         text=True,
                         timeout=timeout_value
                     )
+                    
+                    # Специальная обработка для pdf2docx - если установка не удалась из-за компиляции,
+                    # пропускаем её с предупреждением (библиотека не критична)
+                    if lib == 'pdf2docx' and result.returncode != 0:
+                        error_msg = result.stderr if result.stderr else result.stdout or ""
+                        if 'compiler' in error_msg.lower() or 'building wheel' in error_msg.lower() or 'meson' in error_msg.lower() or 'numpy' in error_msg.lower():
+                            self.root.after(0, lambda: progress_text.insert(tk.END, f"  ⚠ pdf2docx не установлен (требует компилятор). Библиотека не критична.\n"))
+                            self.root.after(0, lambda: progress_text.insert(tk.END, f"  Вы можете установить её вручную позже: pip install pdf2docx\n"))
+                            self.root.after(0, lambda: progress_text.see(tk.END))
+                            # Не считаем это ошибкой, просто пропускаем
+                            continue
                     
                     if result.returncode == 0:
                         # Обновляем sys.path для обнаружения новых модулей
@@ -1099,9 +1392,53 @@ class LibraryManager:
                         except Exception:
                             pass
                         
-                        self.root.after(0, lambda l=lib: progress_text.insert(tk.END, f"  ✓ {l} установлен успешно\n"))
-                        success_count += 1
-                        installed_libs.append(lib)
+                        # Специальная обработка для pywin32 - запускаем post-install скрипт
+                        if lib == 'pywin32':
+                            try:
+                                self.root.after(0, lambda: progress_text.insert(tk.END, f"  Запуск post-install скрипта для {lib}...\n"))
+                                self.root.after(0, lambda: progress_text.see(tk.END))
+                                self.root.after(0, lambda: progress_window.update())
+                                
+                                post_install_script = os.path.join(
+                                    sys.prefix, 'Scripts', 'pywin32_postinstall.py'
+                                )
+                                if os.path.exists(post_install_script):
+                                    post_result = subprocess.run(
+                                        [sys.executable, post_install_script, '-install'],
+                                        capture_output=True,
+                                        text=True,
+                                        timeout=60
+                                    )
+                                    if post_result.returncode == 0:
+                                        self.root.after(0, lambda: progress_text.insert(tk.END, f"  ✓ pywin32 post-install выполнен\n"))
+                                    else:
+                                        self.root.after(0, lambda: progress_text.insert(tk.END, f"  ⚠ pywin32 post-install завершился с предупреждением\n"))
+                                else:
+                                    self.root.after(0, lambda: progress_text.insert(tk.END, f"  ⚠ pywin32_postinstall.py не найден\n"))
+                            except Exception as e:
+                                self.root.after(0, lambda err=str(e)[:100]: progress_text.insert(tk.END, f"  ⚠ Ошибка post-install для pywin32: {err}\n"))
+                        
+                        # Проверяем, что библиотека действительно установлена
+                        all_libs_dict = self.get_all_libraries()
+                        import_name = all_libs_dict.get(lib)
+                        if import_name:
+                            # Даем немного времени на завершение установки
+                            time.sleep(0.2)
+                            # Проверяем библиотеку
+                            if self._check_library(lib, import_name):
+                                self.root.after(0, lambda l=lib: progress_text.insert(tk.END, f"  ✓ {l} установлен успешно\n"))
+                                success_count += 1
+                                installed_libs.append(lib)
+                            else:
+                                # Библиотека установлена, но не может быть импортирована сразу
+                                # Это нормально для некоторых библиотек, требующих перезапуска
+                                self.root.after(0, lambda l=lib: progress_text.insert(tk.END, f"  ✓ {l} установлен (может потребоваться перезапуск)\n"))
+                                success_count += 1
+                                installed_libs.append(lib)
+                        else:
+                            self.root.after(0, lambda l=lib: progress_text.insert(tk.END, f"  ✓ {l} установлен успешно\n"))
+                            success_count += 1
+                            installed_libs.append(lib)
                         self.root.after(0, lambda s=success_count, t=total_libs: counter_label.config(
                             text=f"Успешно установлено: {s} из {t}"
                         ))

@@ -1,4 +1,8 @@
-"""Модуль для UI компонентов и стилей."""
+"""Модуль для UI компонентов и стилей.
+
+Содержит переиспользуемые компоненты интерфейса и систему управления стилями
+для создания единообразного внешнего вида приложения.
+"""
 
 import tkinter as tk
 from tkinter import ttk
@@ -6,7 +10,11 @@ from typing import Optional, Callable, Tuple
 
 
 class UIComponents:
-    """Класс для создания переиспользуемых UI компонентов."""
+    """Класс для создания переиспользуемых UI компонентов.
+    
+    Предоставляет статические методы для создания стандартизированных
+    элементов интерфейса с единым стилем оформления.
+    """
     
     @staticmethod
     def hex_to_rgb(hex_color: str) -> Tuple[int, int, int]:
@@ -303,7 +311,7 @@ class StyleManager:
             'info_hover': '#2563EB',
             'secondary': '#6B7280',
             'secondary_hover': '#4B5563',
-            'bg_main': '#F5F7FA',
+            'bg_main': '#FFFFFF',
             'bg_card': '#FFFFFF',
             'bg_secondary': '#EDF2F7',
             'bg_hover': '#F7FAFC',
@@ -488,8 +496,8 @@ class StyleManager:
                            background=self.colors['bg_main'],
                            borderwidth=0)
         self.style.configure('TNotebook.Tab',
-                           padding=(14, 8),
-                           font=('Segoe UI', 9, 'bold'),
+                           padding=(20, 12),
+                           font=('Segoe UI', 10, 'bold'),
                            background=self.colors['bg_secondary'],
                            foreground=self.colors['text_secondary'])
         self.style.map('TNotebook.Tab',
@@ -503,14 +511,14 @@ class StyleManager:
         self.style.configure('TRadiobutton',
                            background=self.colors['bg_card'],
                            foreground=self.colors['text_primary'],
-                           font=('Segoe UI', 9),
+                           font=('Segoe UI', 11),
                            selectcolor='white')
         
         # Стиль для Checkbutton
         self.style.configure('TCheckbutton',
                            background=self.colors['bg_card'],
                            foreground=self.colors['text_primary'],
-                           font=('Segoe UI', 9),
+                           font=('Segoe UI', 11),
                            selectcolor='white')
         
         # Стиль для Entry
@@ -536,7 +544,7 @@ class StyleManager:
                            borderwidth=2,
                            relief='flat',
                            padding=10,
-                           font=('Segoe UI', 10))
+                           font=('Segoe UI', 11))
         self.style.map('TCombobox',
                      bordercolor=[('focus', self.colors['border_focus']),
                                 ('!focus', self.colors['border'])],

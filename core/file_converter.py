@@ -1,6 +1,12 @@
 """Модуль для конвертации файлов.
 
-Поддерживает конвертацию изображений (через Pillow) и базовую конвертацию файлов.
+Обеспечивает конвертацию файлов между различными форматами:
+- Изображения: JPG, PNG, BMP, TIFF, WEBP и др. (через Pillow)
+- Документы: DOCX в PDF, PDF в DOCX (через COM или специализированные библиотеки)
+- Аудио: MP3, WAV, FLAC и др. (через pydub)
+- Видео: MP4, AVI, MKV и др. (через moviepy)
+
+Поддерживает автоматическую установку необходимых библиотек.
 """
 
 import io
@@ -39,6 +45,19 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 
+def _is_in_venv() -> bool:
+    """Проверка, запущена ли программа в виртуальном окружении.
+    
+    Returns:
+        True если в виртуальном окружении, False иначе
+    """
+    # Проверяем через sys.prefix (в venv он отличается от base_prefix)
+    if hasattr(sys, 'base_prefix'):
+        return sys.prefix != sys.base_prefix
+    # Альтернативная проверка через переменную окружения
+    return bool(os.environ.get('VIRTUAL_ENV'))
+
+
 def _install_package(package_name: str) -> bool:
     """Установка пакета через pip.
     
@@ -50,11 +69,15 @@ def _install_package(package_name: str) -> bool:
     """
     try:
         logger.info(f"Попытка установки {package_name}...")
-        # Используем --user для установки в пользовательскую директорию
-        # --upgrade для обновления если уже установлен
-        # --no-warn-script-location для уменьшения предупреждений
+        # Формируем команду установки
+        install_cmd = [sys.executable, "-m", "pip", "install", package_name, "--upgrade"]
+        # Используем --user только если НЕ в виртуальном окружении
+        if not _is_in_venv():
+            install_cmd.append("--user")
+        install_cmd.append("--no-warn-script-location")
+        
         result = subprocess.run(
-            [sys.executable, "-m", "pip", "install", package_name, "--user", "--upgrade", "--no-warn-script-location"],
+            install_cmd,
             capture_output=True,
             text=True,
             timeout=PACKAGE_INSTALL_TIMEOUT,
@@ -163,13 +186,33 @@ class FileConverter:
                 # Пробуем установить pywin32
                 logger.info("win32com не найден, пытаемся установить pywin32...")
                 if _install_package("pywin32"):
+                    # Запускаем post-install скрипт для pywin32
+                    try:
+                        post_install_script = os.path.join(
+                            sys.prefix, 'Scripts', 'pywin32_postinstall.py'
+                        )
+                        if os.path.exists(post_install_script):
+                            logger.info("Запуск post-install скрипта для pywin32...")
+                            post_result = subprocess.run(
+                                [sys.executable, post_install_script, '-install'],
+                                capture_output=True,
+                                text=True,
+                                timeout=60
+                            )
+                            if post_result.returncode == 0:
+                                logger.info("pywin32 post-install скрипт выполнен успешно")
+                            else:
+                                logger.warning(f"pywin32 post-install скрипт завершился с ошибкой: {post_result.stderr[:200]}")
+                    except Exception as e:
+                        logger.warning(f"Не удалось запустить post-install скрипт для pywin32: {e}")
+                    
                     try:
                         import win32com.client
                         self.win32com = win32com.client
                         self.docx2pdf_available = True
                         logger.info("win32com успешно установлен и доступен для конвертации DOCX в PDF")
                     except ImportError:
-                        logger.warning("pywin32 установлен, но win32com.client все еще недоступен")
+                        logger.warning("pywin32 установлен, но win32com.client все еще недоступен. Может потребоваться перезапуск программы.")
                         # Пробуем comtypes
                         try:
                             import comtypes.client
@@ -256,16 +299,20 @@ class FileConverter:
                         except ImportError:
                             logger.warning("comtypes установлен, но все еще недоступен")
         
-        # Пробуем docx2pdf только если COM методы недоступны
-        if not self.win32com and not self.comtypes:
-            try:
-                from docx2pdf import convert as docx2pdf_convert
-                self.docx2pdf_convert = docx2pdf_convert
-                self.docx2pdf_available = True
+        # Пробуем загрузить docx2pdf как fallback метод (даже если COM методы доступны)
+        # docx2pdf будет использоваться если COM методы не работают
+        try:
+            from docx2pdf import convert as docx2pdf_convert
+            self.docx2pdf_convert = docx2pdf_convert
+            self.docx2pdf_available = True
+            if not self.win32com and not self.comtypes:
                 self.use_docx2pdf = True
                 logger.info("docx2pdf доступен для конвертации DOCX в PDF (COM методы недоступны)")
-            except ImportError:
-                pass
+            else:
+                self.use_docx2pdf = False
+                logger.info("docx2pdf доступен как fallback метод для конвертации DOCX в PDF")
+        except ImportError:
+            pass
         
         # Поддерживаемые форматы документов
         # Примечание: python-docx не поддерживает конвертацию в старый формат .doc
@@ -990,16 +1037,76 @@ class FileConverter:
                     logger.error(f"Ошибка при конвертации через comtypes: {e}", exc_info=True)
                     conversion_success = False
             
-            # Если ни один метод не сработал
+            # Если ни один метод не сработал, пробуем docx2pdf как последний fallback
+            if not conversion_success and self.docx2pdf_convert is not None and source_ext == '.docx':
+                logger.info("Все COM методы не сработали, пробуем docx2pdf как fallback...")
+                tried_methods.append("docx2pdf")
+                try:
+                    output_dir = os.path.dirname(output_path)
+                    if not output_dir:
+                        output_dir = os.path.dirname(file_path)
+                    os.makedirs(output_dir, exist_ok=True)
+                    
+                    old_stdout = sys.stdout
+                    old_stderr = sys.stderr
+                    sys.stdout = io.StringIO()
+                    sys.stderr = io.StringIO()
+                    
+                    try:
+                        self.docx2pdf_convert(file_path, output_path)
+                    except (TypeError, ValueError):
+                        self.docx2pdf_convert(file_path)
+                    finally:
+                        sys.stdout = old_stdout
+                        sys.stderr = old_stderr
+                    
+                    if os.path.exists(output_path):
+                        logger.info("docx2pdf успешно конвертировал файл")
+                        return True, "Документ успешно конвертирован в PDF через docx2pdf", output_path
+                    
+                    possible_path = self._find_pdf_in_source_directory(file_path)
+                    if possible_path and os.path.exists(possible_path):
+                        if possible_path != output_path:
+                            try:
+                                shutil.move(possible_path, output_path)
+                            except Exception:
+                                pass
+                        logger.info("docx2pdf успешно конвертировал файл (найден в другой директории)")
+                        return True, "Документ успешно конвертирован в PDF через docx2pdf", output_path
+                except Exception as e:
+                    logger.warning(f"docx2pdf также не сработал: {e}")
+            
+            # Если все методы не сработали, формируем сообщение об ошибке
             if not conversion_success:
                 format_name = "DOCX" if source_ext == '.docx' else "DOC"
                 error_msg = f"Не удалось конвертировать {format_name} в PDF. "
                 
                 if tried_methods:
                     error_msg += f"Пробовались методы: {', '.join(tried_methods)}. "
-                    error_msg += "Убедитесь, что Microsoft Word установлен и доступен."
+                    
+                    # Проверяем наличие Word для более информативного сообщения
+                    if HAS_COM_UTILS:
+                        try:
+                            from core.com_utils import check_word_installed
+                            word_installed, install_msg = check_word_installed()
+                            if not word_installed:
+                                error_msg += install_msg
+                                if self.docx2pdf_convert and source_ext == '.docx':
+                                    error_msg += " Или установите docx2pdf: pip install docx2pdf"
+                            else:
+                                error_msg += "Возможно, Word заблокирован или недоступен. Попробуйте закрыть все окна Word и перезапустить программу."
+                                if self.docx2pdf_convert and source_ext == '.docx':
+                                    error_msg += " Или установите docx2pdf для альтернативного метода: pip install docx2pdf"
+                        except Exception:
+                            error_msg += "Убедитесь, что Microsoft Word установлен и доступен."
+                            if self.docx2pdf_convert and source_ext == '.docx':
+                                error_msg += " Или используйте docx2pdf: pip install docx2pdf"
+                    else:
+                        error_msg += "Убедитесь, что Microsoft Word установлен и доступен."
+                        if self.docx2pdf_convert and source_ext == '.docx':
+                            error_msg += " Или используйте docx2pdf: pip install docx2pdf"
                 else:
-                    # Если ни один метод не был попробован, значит они недоступны
+                    # Если ни один метод не был попробован
                     available_methods = []
                     if self.docx2pdf_convert:
                         available_methods.append("docx2pdf")
@@ -1011,7 +1118,7 @@ class FileConverter:
                     if available_methods:
                         error_msg += f"Доступны методы: {', '.join(available_methods)}, но они не были использованы. "
                     else:
-                        error_msg += "Установите docx2pdf или используйте Windows с установленным Microsoft Word."
+                        error_msg += "Установите docx2pdf (pip install docx2pdf) или используйте Windows с установленным Microsoft Word."
                 
                 logger.error(error_msg)
                 return False, error_msg, None
@@ -1219,8 +1326,14 @@ class FileConverter:
             # moviepy может быть большой библиотекой, увеличиваем таймаут
             try:
                 logger.info("Установка moviepy (это может занять несколько минут)...")
+                # Формируем команду установки
+                install_cmd = [sys.executable, "-m", "pip", "install", "moviepy", "--upgrade"]
+                # Используем --user только если НЕ в виртуальном окружении
+                if not _is_in_venv():
+                    install_cmd.append("--user")
+                
                 result = subprocess.run(
-                    [sys.executable, "-m", "pip", "install", "moviepy", "--user", "--upgrade"],
+                    install_cmd,
                     capture_output=True,
                     text=True,
                     timeout=600,  # Увеличенный таймаут для moviepy
