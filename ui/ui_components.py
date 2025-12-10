@@ -301,6 +301,8 @@ class StyleManager:
             'warning_hover': '#D97706',
             'info': '#3B82F6',
             'info_hover': '#2563EB',
+            'secondary': '#6B7280',
+            'secondary_hover': '#4B5563',
             'bg_main': '#F5F7FA',
             'bg_card': '#FFFFFF',
             'bg_secondary': '#EDF2F7',

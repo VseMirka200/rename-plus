@@ -74,11 +74,11 @@ def convert_docx_with_word(
     output_path: str,
     com_client_type: str = "win32com"
 ) -> Tuple[bool, Optional[str]]:
-    """Конвертация DOCX в PDF через Word приложение.
+    """Конвертация DOCX/DOC в PDF через Word приложение.
     
     Args:
         word_app: Объект Word.Application
-        file_path: Путь к исходному DOCX файлу
+        file_path: Путь к исходному DOCX или DOC файлу
         output_path: Путь для сохранения PDF
         com_client_type: Тип COM клиента ("win32com" или "comtypes")
         

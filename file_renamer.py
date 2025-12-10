@@ -157,14 +157,16 @@ class FileRenamerApp:
     - Plugin system integration
     """
     
-    def __init__(self, root):
+    def __init__(self, root, library_manager=None):
         """Инициализация приложения.
         
         Args:
             root: Корневое окно Tkinter
+            library_manager: Менеджер библиотек (опционально)
         """
         self.root = root
         self.root.title("Ренейм+")
+        self.library_manager = library_manager
         
         # Используем константы для размеров окна
         try:
@@ -367,9 +369,8 @@ class FileRenamerApp:
         # Обработчик закрытия окна - сворачивание в трей
         self.root.protocol("WM_DELETE_WINDOW", self.on_close_window)
         
-        # Проверка и установка необходимых библиотек (после создания интерфейса)
-        # Выполняем с задержкой, чтобы окно успело отобразиться
-        self.root.after(100, self.library_manager.check_and_install)
+        # LibraryManager доступен для ручной установки библиотек при необходимости
+        # Автоматическая установка при запуске отключена
     
     def bind_mousewheel(self, widget, canvas=None):
         """Привязка прокрутки колесом мыши к виджету."""
@@ -1069,6 +1070,7 @@ class FileRenamerApp:
         self._create_main_metadata_removal_tab()
         self._create_main_file_converter_tab()
         self._create_main_log_tab()
+        self._create_main_settings_tab()
         self._create_main_about_tab()
         self._create_main_support_tab()
         
@@ -1870,18 +1872,19 @@ class FileRenamerApp:
             self.main_notebook.select(3)  # Индекс 3 - вкладка лога (после удаления метаданных и конвертации)
     
     def open_settings_window(self):
-        """Переключение на вкладку настроек в главном окне (удалено)"""
-        pass
+        """Переключение на вкладку настроек в главном окне"""
+        if hasattr(self, 'main_notebook') and self.main_notebook:
+            self.main_notebook.select(3)  # Индекс 3 - вкладка настроек (после лога)
     
     def open_about_window(self):
         """Переключение на вкладку о программе в главном окне"""
         if hasattr(self, 'main_notebook') and self.main_notebook:
-            self.main_notebook.select(4)  # Индекс 4 - вкладка о программе
+            self.main_notebook.select(5)  # Индекс 5 - вкладка о программе (после настроек)
     
     def open_support_window(self):
         """Переключение на вкладку поддержки в главном окне"""
         if hasattr(self, 'main_notebook') and self.main_notebook:
-            self.main_notebook.select(5)  # Индекс 5 - вкладка поддержки
+            self.main_notebook.select(6)  # Индекс 6 - вкладка поддержки
     
     def _create_main_log_tab(self):
         """Создание вкладки лога операций на главном экране"""
@@ -2502,6 +2505,403 @@ class FileRenamerApp:
             font=('Robot', 9, 'bold'), padx=10, pady=6,
             active_bg=self.colors['success_hover'])
         btn_convert.pack(fill=tk.X)
+    
+    def _create_main_settings_tab(self):
+        """Создание вкладки настроек на главном экране"""
+        settings_tab = tk.Frame(self.main_notebook, bg=self.colors['bg_main'])
+        settings_tab.columnconfigure(0, weight=1)
+        settings_tab.rowconfigure(0, weight=1)
+        self.main_notebook.add(settings_tab, text="Настройки")
+        
+        # Используем код из _create_settings_tab, но адаптируем для главного окна
+        self._create_settings_tab_content(settings_tab)
+    
+    def _create_settings_tab_content(self, settings_tab):
+        """Создание содержимого вкладки настроек (используется и в главном окне, и в отдельном)"""
+        # Определяем цвет фона в зависимости от того, где используется
+        try:
+            bg_color = settings_tab.cget('bg')
+        except (tk.TclError, AttributeError):
+            bg_color = self.colors['bg_main']
+        # Содержимое настроек с прокруткой
+        canvas = tk.Canvas(settings_tab, bg=bg_color, highlightthickness=0)
+        scrollbar = ttk.Scrollbar(settings_tab, orient="vertical", command=canvas.yview)
+        scrollable_frame = tk.Frame(canvas, bg=bg_color)
+        
+        scrollable_frame.bind(
+            "<Configure>",
+            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
+        )
+        
+        canvas_window = canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+    
+        def on_canvas_configure(event):
+            if event.widget == canvas:
+                try:
+                    canvas_width = event.width
+                    canvas.itemconfig(canvas_window, width=canvas_width)
+                except (AttributeError, tk.TclError):
+                    pass
+        
+        canvas.bind('<Configure>', on_canvas_configure)
+        def on_window_configure(event):
+            if event.widget == settings_tab:
+                try:
+                    canvas_width = settings_tab.winfo_width() - scrollbar.winfo_width() - 4
+                    canvas.itemconfig(canvas_window, width=max(canvas_width, 100))
+                except (AttributeError, tk.TclError):
+                    pass
+        
+        settings_tab.bind('<Configure>', on_window_configure)
+        canvas.configure(yscrollcommand=scrollbar.set)
+        
+        # Привязка прокрутки колесом мыши
+        self.bind_mousewheel(canvas, canvas)
+        self.bind_mousewheel(scrollable_frame, canvas)
+        
+        canvas.grid(row=0, column=0, sticky="nsew")
+        scrollbar.grid(row=0, column=1, sticky="ns")
+        settings_tab.rowconfigure(0, weight=1)
+        settings_tab.columnconfigure(0, weight=1)
+        
+        content_frame = scrollable_frame
+        content_frame.columnconfigure(0, weight=1)
+        scrollable_frame.configure(padx=40, pady=40)
+        
+        # Заголовок
+        title_label = tk.Label(content_frame, text="Настройки", 
+                              font=('Robot', 20, 'bold'),
+                              bg=bg_color, 
+                              fg=self.colors['text_primary'])
+        title_label.pack(anchor=tk.W, pady=(0, 25))
+        
+        # Секция: Общие настройки
+        general_frame = ttk.LabelFrame(content_frame, text="Общие настройки", 
+                                      style='Card.TLabelframe', padding=20)
+        general_frame.pack(fill=tk.X, pady=(0, 20))
+        
+        # Автоматическое применение методов
+        auto_apply_var = tk.BooleanVar(value=self.settings.get('auto_apply', False))
+        auto_apply_check = tk.Checkbutton(general_frame, 
+                                         text="Автоматически применять методы при добавлении",
+                                         variable=auto_apply_var,
+                                         font=('Robot', 10),
+                                         bg=self.colors['bg_card'],
+                                         fg=self.colors['text_primary'],
+                                         selectcolor='white',
+                                         activebackground=self.colors['bg_card'],
+                                         activeforeground=self.colors['text_primary'])
+        auto_apply_check.pack(anchor=tk.W, pady=5)
+        
+        # Показывать предупреждения
+        show_warnings_var = tk.BooleanVar(value=self.settings.get('show_warnings', True))
+        show_warnings_check = tk.Checkbutton(general_frame, 
+                                            text="Показывать предупреждения перед переименованием",
+                                            variable=show_warnings_var,
+                                            font=('Robot', 10),
+                                            bg=self.colors['bg_card'],
+                                            fg=self.colors['text_primary'],
+                                            selectcolor='white',
+                                            activebackground=self.colors['bg_card'],
+                                            activeforeground=self.colors['text_primary'])
+        show_warnings_check.pack(anchor=tk.W, pady=5)
+        
+        # Секция: Интерфейс
+        ui_frame = ttk.LabelFrame(content_frame, text="Интерфейс", 
+                                 style='Card.TLabelframe', padding=20)
+        ui_frame.pack(fill=tk.X, pady=(0, 20))
+        
+        # Размер шрифта
+        font_size_label = tk.Label(ui_frame, text="Размер шрифта:",
+                                   font=('Robot', 11, 'bold'),
+                                   bg=self.colors['bg_card'],
+                                   fg=self.colors['text_primary'])
+        font_size_label.pack(anchor=tk.W, pady=(0, 8))
+        
+        font_size_var = tk.StringVar(value=self.settings.get('font_size', '10'))
+        font_size_combo = ttk.Combobox(ui_frame, textvariable=font_size_var,
+                                      values=["8", "9", "10", "11", "12"],
+                                      state="readonly", width=10)
+        font_size_combo.pack(anchor=tk.W, pady=(0, 10))
+        
+        # Секция: Файлы
+        files_frame = ttk.LabelFrame(content_frame, text="Работа с файлами", 
+                                    style='Card.TLabelframe', padding=20)
+        files_frame.pack(fill=tk.X, pady=(0, 20))
+        
+        # Резервное копирование
+        backup_var = tk.BooleanVar(value=self.settings.get('backup', False))
+        backup_check = tk.Checkbutton(files_frame, 
+                                      text="Создавать резервные копии перед переименованием",
+                                      variable=backup_var,
+                                      font=('Robot', 10),
+                                      bg=self.colors['bg_card'],
+                                      fg=self.colors['text_primary'],
+                                      selectcolor='white',
+                                      activebackground=self.colors['bg_card'],
+                                      activeforeground=self.colors['text_primary'])
+        backup_check.pack(anchor=tk.W, pady=5)
+        
+        # Секция: Управление библиотеками (код уже был добавлен в _create_settings_tab)
+        # Копируем логику из существующего метода
+        if hasattr(self, 'library_manager') and self.library_manager:
+            libs_frame = ttk.LabelFrame(content_frame, text="Управление библиотеками", 
+                                      style='Card.TLabelframe', padding=20)
+            libs_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 20))
+            
+            libs_info_label = tk.Label(libs_frame,
+                                     text="Управление библиотеками программы. Установка и удаление библиотек.",
+                                     font=('Robot', 9),
+                                     bg=self.colors['bg_card'],
+                                     fg=self.colors['text_secondary'],
+                                     wraplength=600,
+                                     justify=tk.LEFT)
+            libs_info_label.pack(anchor=tk.W, pady=(0, 15))
+            
+            # Фрейм для таблицы библиотек
+            libs_table_frame = tk.Frame(libs_frame, bg=self.colors['bg_card'])
+            libs_table_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 10))
+            
+            # Scrollbar для таблицы
+            libs_scrollbar = ttk.Scrollbar(libs_table_frame, orient=tk.VERTICAL)
+            libs_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+            
+            # Treeview для отображения библиотек
+            libs_tree = ttk.Treeview(
+                libs_table_frame,
+                columns=('status', 'type', 'action'),
+                show='tree headings',
+                yscrollcommand=libs_scrollbar.set,
+                height=12
+            )
+            libs_scrollbar.config(command=libs_tree.yview)
+            
+            # Настройка колонок
+            libs_tree.heading('#0', text='Библиотека')
+            libs_tree.heading('status', text='Статус')
+            libs_tree.heading('type', text='Тип')
+            libs_tree.heading('action', text='Действие')
+            
+            libs_tree.column('#0', width=250, minwidth=150)
+            libs_tree.column('status', width=120, minwidth=100)
+            libs_tree.column('type', width=120, minwidth=100)
+            libs_tree.column('action', width=200, minwidth=150)
+            
+            libs_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+            
+            def refresh_libraries_table():
+                """Обновление таблицы библиотек."""
+                # Инвалидируем кэш для актуальной проверки
+                self.library_manager.invalidate_cache()
+                
+                for item in libs_tree.get_children():
+                    libs_tree.delete(item)
+                
+                # Добавляем обязательные библиотеки
+                required_node = libs_tree.insert('', 'end', text='Обязательные', tags=('category',))
+                for lib_name in self.library_manager.REQUIRED_LIBRARIES.keys():
+                    is_installed = self.library_manager.is_library_installed(lib_name)
+                    status = "✓ Установлена" if is_installed else "✗ Отсутствует"
+                    libs_tree.insert(required_node, 'end', text=lib_name, 
+                                   values=(status, 'Обязательная', ''),
+                                   tags=('required', 'installed' if is_installed else 'missing'))
+                
+                # Добавляем опциональные библиотеки
+                optional_node = libs_tree.insert('', 'end', text='Опциональные', tags=('category',))
+                for lib_name in self.library_manager.OPTIONAL_LIBRARIES.keys():
+                    is_installed = self.library_manager.is_library_installed(lib_name)
+                    status = "✓ Установлена" if is_installed else "○ Не установлена"
+                    libs_tree.insert(optional_node, 'end', text=lib_name,
+                                   values=(status, 'Опциональная', ''),
+                                   tags=('optional', 'installed' if is_installed else 'missing'))
+                
+                # Добавляем Windows-специфичные библиотеки
+                if sys.platform == 'win32':
+                    windows_node = libs_tree.insert('', 'end', text='Windows-специфичные', tags=('category',))
+                    for lib_name in self.library_manager.WINDOWS_OPTIONAL_LIBRARIES.keys():
+                        is_installed = self.library_manager.is_library_installed(lib_name)
+                        status = "✓ Установлена" if is_installed else "○ Не установлена"
+                        libs_tree.insert(windows_node, 'end', text=lib_name,
+                                       values=(status, 'Windows', ''),
+                                       tags=('windows', 'installed' if is_installed else 'missing'))
+                
+                # Раскрываем все категории
+                for item in libs_tree.get_children():
+                    libs_tree.item(item, open=True)
+                
+                # Настройка цветов
+                libs_tree.tag_configure('category', font=('Robot', 10, 'bold'))
+                libs_tree.tag_configure('installed', foreground='green')
+                libs_tree.tag_configure('missing', foreground='gray')
+            
+            refresh_libraries_table()
+            
+            # Фрейм для кнопок действий
+            libs_actions_frame = tk.Frame(libs_frame, bg=self.colors['bg_card'])
+            libs_actions_frame.pack(fill=tk.X, pady=(10, 0))
+            
+            def install_selected_handler():
+                selected = libs_tree.selection()
+                if not selected:
+                    messagebox.showwarning("Внимание", "Выберите библиотеку для установки")
+                    return
+                
+                item = selected[0]
+                if libs_tree.get_children(item):
+                    messagebox.showwarning("Внимание", "Выберите конкретную библиотеку, а не категорию")
+                    return
+                
+                lib_name = libs_tree.item(item, 'text')
+                
+                if self.library_manager.is_library_installed(lib_name):
+                    messagebox.showinfo("Информация", f"Библиотека {lib_name} уже установлена")
+                    return
+                
+                def install_thread():
+                    success, message = self.library_manager.install_single_library(lib_name)
+                    self.root.after(0, lambda: messagebox.showinfo(
+                        "Результат установки" if success else "Ошибка",
+                        message
+                    ))
+                    self.root.after(0, refresh_libraries_table)
+                
+                threading.Thread(target=install_thread, daemon=True).start()
+            
+            install_btn = self.create_rounded_button(
+                libs_actions_frame, "Установить", install_selected_handler,
+                self.colors['primary'], 'white',
+                font=('Robot', 9, 'bold'), padx=15, pady=8,
+                active_bg=self.colors['primary_hover'])
+            install_btn.pack(side=tk.LEFT, padx=(0, 10))
+            
+            def uninstall_selected_handler():
+                selected = libs_tree.selection()
+                if not selected:
+                    messagebox.showwarning("Внимание", "Выберите библиотеку для удаления")
+                    return
+                
+                item = selected[0]
+                if libs_tree.get_children(item):
+                    messagebox.showwarning("Внимание", "Выберите конкретную библиотеку, а не категорию")
+                    return
+                
+                lib_name = libs_tree.item(item, 'text')
+                
+                if not self.library_manager.is_library_installed(lib_name):
+                    messagebox.showinfo("Информация", f"Библиотека {lib_name} не установлена")
+                    return
+                
+                if not messagebox.askyesno("Подтверждение", 
+                                          f"Вы уверены, что хотите удалить библиотеку {lib_name}?"):
+                    return
+                
+                def uninstall_thread():
+                    success, message = self.library_manager.uninstall_library(lib_name)
+                    self.root.after(0, lambda: messagebox.showinfo(
+                        "Результат удаления" if success else "Ошибка",
+                        message
+                    ))
+                    self.root.after(0, refresh_libraries_table)
+                
+                threading.Thread(target=uninstall_thread, daemon=True).start()
+            
+            uninstall_btn = self.create_rounded_button(
+                libs_actions_frame, "Удалить", uninstall_selected_handler,
+                '#dc3545', 'white',
+                font=('Robot', 9), padx=15, pady=8,
+                active_bg='#c82333')
+            uninstall_btn.pack(side=tk.LEFT, padx=(0, 10))
+            
+            refresh_btn = self.create_rounded_button(
+                libs_actions_frame, "Обновить", refresh_libraries_table,
+                self.colors.get('secondary', '#6B7280'), 'white',
+                font=('Robot', 9), padx=15, pady=8,
+                active_bg=self.colors.get('secondary_hover', '#4B5563'))
+            refresh_btn.pack(side=tk.LEFT)
+            
+            def check_all_handler():
+                def run_check():
+                    try:
+                        self.library_manager.check_and_install(
+                            install_optional=True, silent=False, force_check=True)
+                        self.root.after(0, refresh_libraries_table)
+                    except Exception as e:
+                        logger.error(f"Ошибка при проверке библиотек: {e}", exc_info=True)
+                        self.root.after(0, lambda: messagebox.showerror("Ошибка", f"Не удалось проверить библиотеки: {e}"))
+                
+                threading.Thread(target=run_check, daemon=True).start()
+            
+            check_all_btn = self.create_rounded_button(
+                libs_actions_frame, "Проверить все", check_all_handler,
+                self.colors['info'] if 'info' in self.colors else self.colors['primary'],
+                'white', font=('Robot', 9), padx=15, pady=8,
+                active_bg=self.colors['primary_hover'])
+            check_all_btn.pack(side=tk.LEFT, padx=(10, 0))
+        
+        # Переключатель темы
+        if HAS_THEME:
+            theme_frame = tk.Frame(scrollable_frame, bg=bg_color)
+            theme_frame.pack(fill=tk.X, padx=20, pady=(20, 10))
+            
+            theme_label = tk.Label(
+                theme_frame, text="Тема интерфейса:",
+                font=('Robot', 10, 'bold'),
+                bg=self.colors['bg_main'],
+                fg=self.colors['text_primary'])
+            theme_label.pack(anchor=tk.W, pady=(0, 5))
+            
+            theme_var = tk.StringVar(value=self.settings_manager.get('theme', 'light'))
+            
+            def on_theme_change():
+                theme = theme_var.get()
+                if hasattr(self, 'theme_manager'):
+                    self.theme_manager.set_theme(theme)
+                    self.colors = self.theme_manager.colors
+                    self.settings_manager.set('theme', theme)
+                    self.settings_manager.save_settings()
+                    messagebox.showinfo("Тема изменена",
+                        "Тема изменена. Перезапустите приложение для применения изменений.")
+            
+            light_radio = tk.Radiobutton(
+                theme_frame, text="Светлая", variable=theme_var,
+                value='light', command=on_theme_change,
+                font=('Robot', 9), bg=self.colors['bg_main'],
+                fg=self.colors['text_primary'],
+                selectcolor=self.colors['bg_main'],
+                activebackground=self.colors['bg_main'],
+                activeforeground=self.colors['text_primary'])
+            light_radio.pack(anchor=tk.W, pady=2)
+            
+            dark_radio = tk.Radiobutton(
+                theme_frame, text="Темная", variable=theme_var,
+                value='dark', command=on_theme_change,
+                font=('Robot', 9), bg=self.colors['bg_main'],
+                fg=self.colors['text_primary'],
+                selectcolor=self.colors['bg_main'],
+                activebackground=self.colors['bg_main'],
+                activeforeground=self.colors['text_primary'])
+            dark_radio.pack(anchor=tk.W, pady=2)
+        
+        # Кнопка сохранения
+        def save_settings_handler():
+            settings_to_save = {
+                'auto_apply': auto_apply_var.get(),
+                'show_warnings': show_warnings_var.get(),
+                'font_size': font_size_var.get(),
+                'backup': backup_var.get()
+            }
+            if self.save_settings(settings_to_save):
+                self.settings.update(settings_to_save)
+                messagebox.showinfo("Настройки", "Настройки успешно сохранены!")
+            else:
+                messagebox.showerror("Ошибка", "Не удалось сохранить настройки!")
+        
+        save_btn = self.create_rounded_button(
+            content_frame, "Сохранить настройки", save_settings_handler,
+            self.colors['primary'], 'white',
+            font=('Robot', 9, 'bold'), padx=10, pady=6,
+            active_bg=self.colors['primary_hover'])
+        save_btn.pack(pady=(10, 0))
     
     def _create_main_about_tab(self):
         """Создание вкладки о программе на главном экране"""
@@ -3536,11 +3936,13 @@ class FileRenamerApp:
                 filtered_formats = [f for f in all_supported_formats if f in doc_formats]
             elif target_category == "audio":
                 # Для аудио показываем только форматы аудио (если они поддерживаются)
-                audio_formats = ['.mp3', '.wav', '.flac', '.aac', '.ogg', '.m4a', '.wma', '.opus']
+                # Используем все форматы из file_converter, а не хардкод
+                audio_formats = list(self.file_converter.supported_audio_formats.keys())
                 filtered_formats = [f for f in all_supported_formats if f in audio_formats]
             elif target_category == "video":
                 # Для видео показываем только форматы видео (если они поддерживаются)
-                video_formats = ['.mp4', '.avi', '.mkv', '.mov', '.wmv', '.flv', '.webm', '.m4v', '.mpg', '.mpeg', '.3gp']
+                # Используем все форматы из file_converter, а не хардкод
+                video_formats = list(self.file_converter.supported_video_formats.keys())
                 filtered_formats = [f for f in all_supported_formats if f in video_formats]
             else:
                 # Для "Все" показываем все поддерживаемые форматы
@@ -4034,7 +4436,8 @@ class FileRenamerApp:
         settings_tab.rowconfigure(0, weight=1)
         notebook.add(settings_tab, text="Настройки")
         
-        # Содержимое настроек с прокруткой
+        # Используем общий метод для создания содержимого
+        self._create_settings_tab_content(settings_tab)
         canvas = tk.Canvas(settings_tab, bg=self.colors['bg_card'], highlightthickness=0)
         scrollbar = ttk.Scrollbar(settings_tab, orient="vertical", command=canvas.yview)
         scrollable_frame = tk.Frame(canvas, bg=self.colors['bg_card'])
@@ -4154,6 +4557,234 @@ class FileRenamerApp:
                                       activebackground=self.colors['bg_card'],
                                       activeforeground=self.colors['text_primary'])
         backup_check.pack(anchor=tk.W, pady=5)
+        
+        # Секция: Управление библиотеками
+        if hasattr(self, 'library_manager') and self.library_manager:
+            libs_frame = ttk.LabelFrame(content_frame, text="Управление библиотеками", 
+                                      style='Card.TLabelframe', padding=20)
+            libs_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 20))
+            
+            libs_info_label = tk.Label(libs_frame,
+                                     text="Управление библиотеками программы. Установка и удаление библиотек.",
+                                     font=('Robot', 9),
+                                     bg=self.colors['bg_card'],
+                                     fg=self.colors['text_secondary'],
+                                     wraplength=600,
+                                     justify=tk.LEFT)
+            libs_info_label.pack(anchor=tk.W, pady=(0, 15))
+            
+            # Фрейм для таблицы библиотек
+            libs_table_frame = tk.Frame(libs_frame, bg=self.colors['bg_card'])
+            libs_table_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 10))
+            
+            # Scrollbar для таблицы
+            libs_scrollbar = ttk.Scrollbar(libs_table_frame, orient=tk.VERTICAL)
+            libs_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+            
+            # Treeview для отображения библиотек
+            libs_tree = ttk.Treeview(
+                libs_table_frame,
+                columns=('status', 'type', 'action'),
+                show='tree headings',
+                yscrollcommand=libs_scrollbar.set,
+                height=12
+            )
+            libs_scrollbar.config(command=libs_tree.yview)
+            
+            # Настройка колонок
+            libs_tree.heading('#0', text='Библиотека')
+            libs_tree.heading('status', text='Статус')
+            libs_tree.heading('type', text='Тип')
+            libs_tree.heading('action', text='Действие')
+            
+            libs_tree.column('#0', width=250, minwidth=150)
+            libs_tree.column('status', width=120, minwidth=100)
+            libs_tree.column('type', width=120, minwidth=100)
+            libs_tree.column('action', width=200, minwidth=150)
+            
+            libs_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+            
+            def refresh_libraries_table():
+                """Обновление таблицы библиотек."""
+                # Очистка таблицы
+                for item in libs_tree.get_children():
+                    libs_tree.delete(item)
+                
+                # Получаем все библиотеки
+                all_libs_dict = self.library_manager.get_all_libraries()
+                
+                # Добавляем обязательные библиотеки
+                required_node = libs_tree.insert('', 'end', text='Обязательные', tags=('category',))
+                for lib_name in self.library_manager.REQUIRED_LIBRARIES.keys():
+                    is_installed = self.library_manager.is_library_installed(lib_name)
+                    status = "✓ Установлена" if is_installed else "✗ Отсутствует"
+                    libs_tree.insert(required_node, 'end', text=lib_name, 
+                                   values=(status, 'Обязательная', ''),
+                                   tags=('required', 'installed' if is_installed else 'missing'))
+                
+                # Добавляем опциональные библиотеки
+                optional_node = libs_tree.insert('', 'end', text='Опциональные', tags=('category',))
+                for lib_name in self.library_manager.OPTIONAL_LIBRARIES.keys():
+                    is_installed = self.library_manager.is_library_installed(lib_name)
+                    status = "✓ Установлена" if is_installed else "○ Не установлена"
+                    libs_tree.insert(optional_node, 'end', text=lib_name,
+                                   values=(status, 'Опциональная', ''),
+                                   tags=('optional', 'installed' if is_installed else 'missing'))
+                
+                # Добавляем Windows-специфичные библиотеки
+                if sys.platform == 'win32':
+                    windows_node = libs_tree.insert('', 'end', text='Windows-специфичные', tags=('category',))
+                    for lib_name in self.library_manager.WINDOWS_OPTIONAL_LIBRARIES.keys():
+                        is_installed = self.library_manager.is_library_installed(lib_name)
+                        status = "✓ Установлена" if is_installed else "○ Не установлена"
+                        libs_tree.insert(windows_node, 'end', text=lib_name,
+                                       values=(status, 'Windows', ''),
+                                       tags=('windows', 'installed' if is_installed else 'missing'))
+                
+                # Раскрываем все категории
+                for item in libs_tree.get_children():
+                    libs_tree.item(item, open=True)
+                
+                # Настройка цветов
+                libs_tree.tag_configure('category', font=('Robot', 10, 'bold'))
+                libs_tree.tag_configure('installed', foreground='green')
+                libs_tree.tag_configure('missing', foreground='gray')
+            
+            # Первоначальная загрузка таблицы
+            refresh_libraries_table()
+            
+            # Фрейм для кнопок действий
+            libs_actions_frame = tk.Frame(libs_frame, bg=self.colors['bg_card'])
+            libs_actions_frame.pack(fill=tk.X, pady=(10, 0))
+            
+            def install_selected_handler():
+                """Установка выбранной библиотеки."""
+                selected = libs_tree.selection()
+                if not selected:
+                    messagebox.showwarning("Внимание", "Выберите библиотеку для установки")
+                    return
+                
+                item = selected[0]
+                # Проверяем, что это не категория
+                if libs_tree.get_children(item):
+                    messagebox.showwarning("Внимание", "Выберите конкретную библиотеку, а не категорию")
+                    return
+                
+                lib_name = libs_tree.item(item, 'text')
+                
+                # Проверяем, не установлена ли уже
+                if self.library_manager.is_library_installed(lib_name):
+                    messagebox.showinfo("Информация", f"Библиотека {lib_name} уже установлена")
+                    return
+                
+                def install_thread():
+                    success, message = self.library_manager.install_single_library(lib_name)
+                    self.root.after(0, lambda: messagebox.showinfo(
+                        "Результат установки" if success else "Ошибка",
+                        message
+                    ))
+                    self.root.after(0, refresh_libraries_table)
+                
+                threading.Thread(target=install_thread, daemon=True).start()
+            
+            install_btn = self.create_rounded_button(
+                libs_actions_frame,
+                "Установить",
+                install_selected_handler,
+                self.colors['primary'],
+                'white',
+                font=('Robot', 9, 'bold'),
+                padx=15,
+                pady=8,
+                active_bg=self.colors['primary_hover'])
+            install_btn.pack(side=tk.LEFT, padx=(0, 10))
+            
+            def uninstall_selected_handler():
+                """Удаление выбранной библиотеки."""
+                selected = libs_tree.selection()
+                if not selected:
+                    messagebox.showwarning("Внимание", "Выберите библиотеку для удаления")
+                    return
+                
+                item = selected[0]
+                # Проверяем, что это не категория
+                if libs_tree.get_children(item):
+                    messagebox.showwarning("Внимание", "Выберите конкретную библиотеку, а не категорию")
+                    return
+                
+                lib_name = libs_tree.item(item, 'text')
+                
+                # Проверяем, установлена ли
+                if not self.library_manager.is_library_installed(lib_name):
+                    messagebox.showinfo("Информация", f"Библиотека {lib_name} не установлена")
+                    return
+                
+                # Подтверждение удаления
+                if not messagebox.askyesno("Подтверждение", 
+                                          f"Вы уверены, что хотите удалить библиотеку {lib_name}?"):
+                    return
+                
+                def uninstall_thread():
+                    success, message = self.library_manager.uninstall_library(lib_name)
+                    self.root.after(0, lambda: messagebox.showinfo(
+                        "Результат удаления" if success else "Ошибка",
+                        message
+                    ))
+                    self.root.after(0, refresh_libraries_table)
+                
+                threading.Thread(target=uninstall_thread, daemon=True).start()
+            
+            uninstall_btn = self.create_rounded_button(
+                libs_actions_frame,
+                "Удалить",
+                uninstall_selected_handler,
+                '#dc3545',
+                'white',
+                font=('Robot', 9),
+                padx=15,
+                pady=8,
+                active_bg='#c82333')
+            uninstall_btn.pack(side=tk.LEFT, padx=(0, 10))
+            
+            refresh_btn = self.create_rounded_button(
+                libs_actions_frame,
+                "Обновить",
+                refresh_libraries_table,
+                self.colors.get('secondary', self.colors.get('bg_secondary', '#EDF2F7')),
+                'white',
+                font=('Robot', 9),
+                padx=15,
+                pady=8,
+                active_bg=self.colors.get('secondary_hover', '#4B5563'))
+            refresh_btn.pack(side=tk.LEFT)
+            
+            def check_all_handler():
+                """Проверка всех библиотек."""
+                def run_check():
+                    try:
+                        self.library_manager.check_and_install(
+                            install_optional=True, 
+                            silent=False,
+                            force_check=True
+                        )
+                        self.root.after(0, refresh_libraries_table)
+                    except Exception as e:
+                        logger.error(f"Ошибка при проверке библиотек: {e}", exc_info=True)
+                        self.root.after(0, lambda: messagebox.showerror("Ошибка", f"Не удалось проверить библиотеки: {e}"))
+                
+                threading.Thread(target=run_check, daemon=True).start()
+            
+            check_all_btn = self.create_rounded_button(
+                libs_actions_frame,
+                "Проверить все",
+                check_all_handler,
+                self.colors['info'] if 'info' in self.colors else self.colors['primary'],
+                'white',
+                font=('Robot', 9),
+                padx=15,
+                pady=8,
+                active_bg=self.colors['primary_hover'])
+            check_all_btn.pack(side=tk.LEFT, padx=(10, 0))
         
         # Кнопка сохранения
         def save_settings_handler():
@@ -4937,9 +5568,27 @@ class FileRenamerApp:
                     
                     # Перемещаем элемент в списке и в дереве
                     if 0 <= start_idx < len(self.files) and 0 <= target_idx < len(self.files):
-                        # Перемещаем в списке файлов
+                        # Сохраняем новое имя с исходной позиции (оно должно остаться на месте)
+                        preserved_new_name = self.files[start_idx].get('new_name', '')
+                        
+                        # Сохраняем новое имя целевой позиции (его получит перемещенный файл)
+                        target_new_name = self.files[target_idx].get('new_name', '')
+                        
+                        # Перемещаем файл (старое имя, путь, расширение)
                         file_data = self.files.pop(start_idx)
+                        
+                        # Если перемещаем вниз, корректируем target_idx после удаления
+                        if start_idx < target_idx:
+                            target_idx -= 1
+                        
+                        # Вставляем файл на новую позицию с новым именем целевой позиции
+                        file_data['new_name'] = target_new_name
                         self.files.insert(target_idx, file_data)
+                        
+                        # Новое имя исходной позиции остается на месте и привязывается к файлу,
+                        # который теперь находится на этой позиции
+                        if start_idx < len(self.files):
+                            self.files[start_idx]['new_name'] = preserved_new_name
                         
                         # Обновляем дерево
                         self.refresh_treeview()
@@ -7067,7 +7716,23 @@ def main():
     else:
         root = tk.Tk()
     
-    app = FileRenamerApp(root)
+    # Проверка и установка библиотек при первом запуске с показом окна прогресса
+    library_manager = None
+    try:
+        library_manager = LibraryManager(
+            root,
+            log_callback=lambda msg: logger.info(msg)
+        )
+        
+        # Проверяем и устанавливаем библиотеки с показом окна установки
+        # Показываем окно только если есть библиотеки для установки
+        # Выполняем с небольшой задержкой, чтобы окно успело инициализироваться
+        root.after(500, lambda: library_manager.check_and_install(install_optional=True, silent=False))
+    except Exception as e:
+        logger.warning(f"Не удалось проверить библиотеки при запуске: {e}", exc_info=True)
+        # Продолжаем работу даже если проверка не удалась
+    
+    app = FileRenamerApp(root, library_manager=library_manager)
     root.mainloop()
 
 

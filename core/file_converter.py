@@ -50,8 +50,11 @@ def _install_package(package_name: str) -> bool:
     """
     try:
         logger.info(f"Попытка установки {package_name}...")
+        # Используем --user для установки в пользовательскую директорию
+        # --upgrade для обновления если уже установлен
+        # --no-warn-script-location для уменьшения предупреждений
         result = subprocess.run(
-            [sys.executable, "-m", "pip", "install", package_name],
+            [sys.executable, "-m", "pip", "install", package_name, "--user", "--upgrade", "--no-warn-script-location"],
             capture_output=True,
             text=True,
             timeout=PACKAGE_INSTALL_TIMEOUT,
@@ -60,7 +63,8 @@ def _install_package(package_name: str) -> bool:
         if result.returncode == 0:
             logger.info(f"{package_name} успешно установлен")
             return True
-        logger.warning(f"Не удалось установить {package_name}: {result.stderr}")
+        error_msg = result.stderr if result.stderr else result.stdout or "Неизвестная ошибка"
+        logger.warning(f"Не удалось установить {package_name}: {error_msg[:500]}")
         return False
     except subprocess.TimeoutExpired:
         logger.error(f"Таймаут при установке {package_name}")
@@ -265,8 +269,10 @@ class FileConverter:
         
         # Поддерживаемые форматы документов
         # Примечание: python-docx не поддерживает конвертацию в старый формат .doc
+        # Но через COM (win32com/comtypes) можно конвертировать и .doc файлы
         self.supported_document_formats = {
             '.docx': 'DOCX',
+            '.doc': 'DOC',  # Старый формат Word, поддерживается через COM
             '.pdf': 'PDF'
         }
         
@@ -274,6 +280,79 @@ class FileConverter:
         self.supported_document_target_formats = {
             '.docx': 'DOCX',
             '.pdf': 'PDF'
+        }
+        
+        # Попытка импортировать pydub для конвертации аудио
+        self.pydub_available = False
+        self.AudioSegment = None
+        try:
+            from pydub import AudioSegment
+            self.AudioSegment = AudioSegment
+            self.pydub_available = True
+            logger.info("pydub доступен для конвертации аудио")
+        except ImportError:
+            logger.debug("pydub не найден. Будет установлен автоматически при первом запуске или при попытке конвертации.")
+            self.pydub_available = False
+        
+        # Поддерживаемые форматы аудио для конвертации
+        self.supported_audio_formats = {
+            '.mp3': 'mp3',
+            '.wav': 'wav',
+            '.flac': 'flac',
+            '.aac': 'aac',
+            '.ogg': 'ogg',
+            '.m4a': 'm4a',
+            '.wma': 'wma',
+            '.opus': 'opus',
+            '.aiff': 'aiff',
+            '.au': 'au',
+            '.mp2': 'mp2',
+            '.ac3': 'ac3',
+            '.3gp': '3gp',
+            '.amr': 'amr',
+            '.ra': 'ra',
+            '.ape': 'ape',
+            '.mpc': 'mpc',
+            '.tta': 'tta',
+            '.wv': 'wv'
+        }
+        
+        # Попытка импортировать moviepy для конвертации видео
+        self.moviepy_available = False
+        self.VideoFileClip = None
+        try:
+            from moviepy.editor import VideoFileClip
+            self.VideoFileClip = VideoFileClip
+            self.moviepy_available = True
+            logger.info("moviepy доступен для конвертации видео")
+        except ImportError:
+            logger.debug("moviepy не найден. Будет установлен автоматически при первом запуске или при попытке конвертации.")
+            self.moviepy_available = False
+        
+        # Поддерживаемые форматы видео для конвертации
+        self.supported_video_formats = {
+            '.mp4': 'mp4',
+            '.avi': 'avi',
+            '.mkv': 'mkv',
+            '.mov': 'mov',
+            '.wmv': 'wmv',
+            '.flv': 'flv',
+            '.webm': 'webm',
+            '.m4v': 'm4v',
+            '.mpg': 'mpg',
+            '.mpeg': 'mpeg',
+            '.3gp': '3gp',
+            '.ogv': 'ogv',
+            '.ts': 'ts',
+            '.mts': 'mts',
+            '.m2ts': 'm2ts',
+            '.f4v': 'f4v',
+            '.asf': 'asf',
+            '.rm': 'rm',
+            '.rmvb': 'rmvb',
+            '.vob': 'vob',
+            '.divx': 'divx',
+            '.xvid': 'xvid'
         }
     
     def can_convert(self, file_path: str, target_format: str) -> bool:
@@ -307,11 +386,17 @@ class FileConverter:
                 # DOCX в DOCX не поддерживается (тот же формат)
                 if source_ext == '.docx' and target_ext == '.docx':
                     return False
+                # DOC в DOC не поддерживается (тот же формат)
+                if source_ext == '.doc' and target_ext == '.doc':
+                    return False
                 # PDF в PDF не поддерживается (тот же формат)
                 if source_ext == '.pdf' and target_ext == '.pdf':
                     return False
                 # DOCX в PDF
                 if source_ext == '.docx' and target_ext == '.pdf':
+                    return self.docx2pdf_available
+                # DOC в PDF (через COM)
+                if source_ext == '.doc' and target_ext == '.pdf':
                     return self.docx2pdf_available
                 # PDF в DOCX
                 if source_ext == '.pdf' and target_ext == '.docx':
@@ -319,6 +404,18 @@ class FileConverter:
                 # Для других форматов документов
                 if self.docx_available:
                     return True
+        
+        # Проверяем конвертацию аудио
+        # Показываем как поддерживаемый формат, даже если библиотека не установлена
+        # (пользователь увидит сообщение при попытке конвертации)
+        if source_ext in self.supported_audio_formats and target_ext in self.supported_audio_formats:
+            return True
+        
+        # Проверяем конвертацию видео
+        # Показываем как поддерживаемый формат, даже если библиотека не установлена
+        # (пользователь увидит сообщение при попытке конвертации)
+        if source_ext in self.supported_video_formats and target_ext in self.supported_video_formats:
+            return True
         
         return False
     
@@ -334,6 +431,11 @@ class FileConverter:
         if self.docx2pdf_available:
             if '.pdf' not in formats:
                 formats.append('.pdf')
+        # Всегда включаем аудио и видео форматы (библиотеки могут быть установлены позже)
+        formats.extend(list(self.supported_audio_formats.keys()))
+        formats.extend(list(self.supported_video_formats.keys()))
+        # Удаляем дубликаты и сортируем
+        formats = sorted(list(set(formats)))
         return formats
     
     def get_file_type_category(self, file_path: str) -> Optional[str]:
@@ -366,18 +468,13 @@ class FileConverter:
         if ext in document_extensions:
             return 'document'
         
-        # Аудио (только популярные)
-        audio_extensions = {
-            '.mp3', '.wav', '.flac', '.aac', '.ogg', '.m4a', '.wma', '.opus'
-        }
+        # Аудио (расширенный список)
+        audio_extensions = set(self.supported_audio_formats.keys())
         if ext in audio_extensions:
             return 'audio'
         
-        # Видео (только популярные)
-        video_extensions = {
-            '.mp4', '.avi', '.mkv', '.mov', '.wmv', '.flv', '.webm', '.m4v',
-            '.mpg', '.mpeg', '.3gp'
-        }
+        # Видео (расширенный список)
+        video_extensions = set(self.supported_video_formats.keys())
         if ext in video_extensions:
             return 'video'
         
@@ -419,8 +516,8 @@ class FileConverter:
         try:
             # Проверяем тип файла и конвертируем соответственно
             if source_ext in self.supported_document_formats:
-                # Конвертация документов Word
-                if source_ext == '.docx' and target_ext == '.pdf':
+                # Конвертация документов Word в PDF
+                if (source_ext == '.docx' or source_ext == '.doc') and target_ext == '.pdf':
                     result = self._convert_docx_to_pdf(file_path, output_path, compress_pdf)
                     # Если конвертация успешна и нужно сжать PDF
                     if result[0] and compress_pdf and os.path.exists(result[2]):
@@ -432,6 +529,12 @@ class FileConverter:
                     return self._convert_pdf_to_docx(file_path, output_path)
                 else:
                     return self._convert_document(file_path, target_ext, output_path)
+            elif source_ext in self.supported_audio_formats:
+                # Конвертация аудио
+                return self._convert_audio(file_path, output_path, source_ext, target_ext, quality)
+            elif source_ext in self.supported_video_formats:
+                # Конвертация видео
+                return self._convert_video(file_path, output_path, source_ext, target_ext, quality)
             elif source_ext in self.supported_image_formats:
                 # Конвертация изображений
                 if not self.pillow_available:
@@ -643,10 +746,10 @@ class FileConverter:
     
     def _convert_docx_to_pdf(self, file_path: str, output_path: str, 
                               compress_pdf: bool = False) -> Tuple[bool, str, Optional[str]]:
-        """Конвертация DOCX в PDF.
+        """Конвертация DOCX/DOC в PDF.
         
         Args:
-            file_path: Путь к исходному DOCX файлу
+            file_path: Путь к исходному DOCX или DOC файлу
             output_path: Путь для сохранения PDF
             compress_pdf: Сжимать ли PDF после конвертации
             
@@ -654,12 +757,17 @@ class FileConverter:
             Кортеж (успех, сообщение, путь к выходному файлу)
         """
         if not self.docx2pdf_available:
-            return False, "Библиотека для конвертации DOCX в PDF не установлена. Установите docx2pdf или используйте Windows с установленным Microsoft Word", None
+            source_ext = os.path.splitext(file_path)[1].lower()
+            format_name = "DOCX" if source_ext == '.docx' else "DOC"
+            return False, f"Библиотека для конвертации {format_name} в PDF не установлена. Установите docx2pdf или используйте Windows с установленным Microsoft Word", None
         
         try:
             # Нормализуем пути
             file_path = os.path.abspath(file_path)
             output_path = os.path.abspath(output_path)
+            
+            # Определяем расширение исходного файла
+            source_ext = os.path.splitext(file_path)[1].lower()
             
             # Пробуем разные методы конвертации по порядку
             conversion_method = None
@@ -668,7 +776,8 @@ class FileConverter:
             
             # Метод 1: Пробуем использовать docx2pdf (только если COM методы недоступны)
             # Пропускаем docx2pdf если доступны COM методы, так как они более надежны
-            if self.use_docx2pdf and self.docx2pdf_convert is not None and not self.win32com and not self.comtypes:
+            # ВАЖНО: docx2pdf может не поддерживать старые .doc файлы, поэтому для .doc лучше использовать COM
+            if self.use_docx2pdf and self.docx2pdf_convert is not None and not self.win32com and not self.comtypes and source_ext == '.docx':
                 logger.info(f"Пробуем конвертировать через docx2pdf: {file_path} -> {output_path}")
                 try:
                     # docx2pdf может принимать путь к файлу или путь к папке
@@ -739,6 +848,10 @@ class FileConverter:
                 except Exception as e:
                     logger.error(f"Ошибка при вызове docx2pdf: {e}", exc_info=True)
                     conversion_success = False
+            elif source_ext == '.doc':
+                # Для старых .doc файлов сразу используем COM методы
+                logger.info(f"Файл .doc обнаружен, используем COM методы для конвертации")
+                conversion_success = False
             
             # Метод 2: Пробуем win32com (более надежный метод для Windows)
             if not conversion_success and self.win32com is not None and sys.platform == 'win32':
@@ -879,7 +992,8 @@ class FileConverter:
             
             # Если ни один метод не сработал
             if not conversion_success:
-                error_msg = "Не удалось конвертировать DOCX в PDF. "
+                format_name = "DOCX" if source_ext == '.docx' else "DOC"
+                error_msg = f"Не удалось конвертировать {format_name} в PDF. "
                 
                 if tried_methods:
                     error_msg += f"Пробовались методы: {', '.join(tried_methods)}. "
@@ -903,7 +1017,7 @@ class FileConverter:
                 return False, error_msg, None
                 
         except Exception as e:
-            logger.error(f"Ошибка при конвертации DOCX в PDF {file_path}: {e}", exc_info=True)
+            logger.error(f"Ошибка при конвертации Word документа в PDF {file_path}: {e}", exc_info=True)
             error_msg = str(e)
             if "Word.Application" in error_msg or "COM" in error_msg:
                 return False, "Не удалось использовать Microsoft Word. Убедитесь, что Word установлен и доступен.", None
@@ -957,5 +1071,301 @@ class FileConverter:
         except Exception as e:
             logger.error(f"Ошибка при конвертации PDF в DOCX {file_path}: {e}", exc_info=True)
             error_msg = str(e)
+            return False, f"Ошибка конвертации: {error_msg}", None
+    
+    def _convert_audio(self, file_path: str, output_path: str, source_ext: str, 
+                       target_ext: str, bitrate: int = 192) -> Tuple[bool, str, Optional[str]]:
+        """Конвертация аудио файлов.
+        
+        Args:
+            file_path: Путь к исходному аудио файлу
+            output_path: Путь для сохранения
+            source_ext: Исходное расширение
+            target_ext: Целевое расширение
+            bitrate: Битрейт для выходного файла (кбит/с)
+            
+        Returns:
+            Кортеж (успех, сообщение, путь к выходному файлу)
+        """
+        if not self.pydub_available:
+            # Пробуем установить pydub автоматически
+            logger.info("pydub не найден, пытаемся установить...")
+            if _install_package("pydub"):
+                # После установки нужно обновить sys.path и попробовать импортировать
+                # Python не всегда может загрузить только что установленный модуль в текущем процессе
+                # После установки пытаемся загрузить модуль
+                # Python не всегда может загрузить только что установленный модуль в текущем процессе
+                try:
+                    import site
+                    import importlib
+                    import importlib.util
+                    
+                    # Добавляем пользовательский site-packages в путь
+                    user_site = site.getusersitepackages()
+                    if user_site and os.path.exists(user_site):
+                        if user_site not in sys.path:
+                            sys.path.insert(0, user_site)
+                        # Также добавляем через addsitedir для обработки .pth файлов
+                        site.addsitedir(user_site)
+                    
+                    # Очищаем кэш импортов для pydub и его подмодулей
+                    modules_to_remove = [m for m in list(sys.modules.keys()) if m.startswith('pydub')]
+                    for m in modules_to_remove:
+                        try:
+                            del sys.modules[m]
+                        except KeyError:
+                            pass
+                    
+                    # Небольшая задержка для завершения установки
+                    time.sleep(0.5)
+                    
+                    # Пробуем импортировать через importlib для более надежной загрузки
+                    try:
+                        spec = importlib.util.find_spec("pydub")
+                        if spec is None or spec.loader is None:
+                            raise ImportError("pydub не найден в sys.path")
+                        
+                        pydub_module = importlib.import_module("pydub")
+                        AudioSegment = pydub_module.AudioSegment
+                        self.AudioSegment = AudioSegment
+                        self.pydub_available = True
+                        logger.info("pydub успешно установлен и загружен")
+                    except (ImportError, AttributeError):
+                        # Пробуем обычный импорт
+                        from pydub import AudioSegment
+                        self.AudioSegment = AudioSegment
+                        self.pydub_available = True
+                        logger.info("pydub успешно установлен и загружен")
+                        
+                except Exception as e:
+                    # Если не удалось загрузить, проверяем, что библиотека установлена
+                    logger.warning(f"Не удалось загрузить pydub сразу после установки: {e}")
+                    # Проверяем, что библиотека действительно установлена
+                    check_result = subprocess.run(
+                        [sys.executable, "-m", "pip", "show", "pydub"],
+                        capture_output=True,
+                        text=True,
+                        timeout=10
+                    )
+                    if check_result.returncode == 0:
+                        # Библиотека установлена, но нужен перезапуск для загрузки
+                        logger.info("pydub установлен, но требуется перезапуск программы для загрузки модуля")
+                        return False, "pydub установлен успешно. Перезапустите программу для применения изменений, затем попробуйте конвертировать снова.", None
+                    else:
+                        return False, "Не удалось установить pydub. Установите вручную: pip install pydub", None
+            else:
+                return False, "Не удалось установить pydub автоматически. Установите вручную: pip install pydub", None
+        
+        try:
+            # Нормализуем пути
+            file_path = os.path.abspath(file_path)
+            output_path = os.path.abspath(output_path)
+            
+            # Убеждаемся, что директория существует
+            output_dir = os.path.dirname(output_path)
+            if output_dir and not os.path.exists(output_dir):
+                os.makedirs(output_dir, exist_ok=True)
+            
+            logger.info(f"Конвертируем аудио: {file_path} -> {output_path}")
+            
+            # Загружаем аудио файл
+            audio = self.AudioSegment.from_file(file_path, format=source_ext[1:])
+            
+            # Определяем параметры экспорта
+            format_name = target_ext[1:].lower()
+            export_params = {}
+            
+            # Настройки битрейта для разных форматов
+            if format_name in ('mp3', 'aac', 'ogg', 'opus'):
+                export_params['bitrate'] = f"{bitrate}k"
+            elif format_name == 'wav':
+                export_params['format'] = 'wav'
+            
+            # Экспортируем в новый формат
+            audio.export(output_path, format=format_name, **export_params)
+            
+            # Проверяем, что файл создан
+            if os.path.exists(output_path):
+                logger.info(f"Аудио успешно конвертировано: {output_path}")
+                return True, "Аудио файл успешно конвертирован", output_path
+            else:
+                return False, "Файл не был создан", None
+                
+        except Exception as e:
+            logger.error(f"Ошибка при конвертации аудио {file_path}: {e}", exc_info=True)
+            error_msg = str(e)
+            # Проверяем, требуется ли ffmpeg
+            if "ffmpeg" in error_msg.lower() or "ffprobe" in error_msg.lower():
+                return False, "Требуется FFmpeg. Установите FFmpeg: https://ffmpeg.org/download.html", None
+            return False, f"Ошибка конвертации: {error_msg}", None
+    
+    def _convert_video(self, file_path: str, output_path: str, source_ext: str, 
+                       target_ext: str, quality: int = 95) -> Tuple[bool, str, Optional[str]]:
+        """Конвертация видео файлов.
+        
+        Args:
+            file_path: Путь к исходному видео файлу
+            output_path: Путь для сохранения
+            source_ext: Исходное расширение
+            target_ext: Целевое расширение
+            quality: Качество видео (1-100)
+            
+        Returns:
+            Кортеж (успех, сообщение, путь к выходному файлу)
+        """
+        if not self.moviepy_available:
+            # Пробуем установить moviepy автоматически
+            logger.info("moviepy не найден, пытаемся установить...")
+            # moviepy может быть большой библиотекой, увеличиваем таймаут
+            try:
+                logger.info("Установка moviepy (это может занять несколько минут)...")
+                result = subprocess.run(
+                    [sys.executable, "-m", "pip", "install", "moviepy", "--user", "--upgrade"],
+                    capture_output=True,
+                    text=True,
+                    timeout=600,  # Увеличенный таймаут для moviepy
+                    check=False,
+                )
+                if result.returncode == 0:
+                    try:
+                        # Обновляем sys.path для поиска только что установленных модулей
+                        import site
+                        import importlib
+                        import importlib.util
+                        
+                        # Добавляем пользовательский site-packages в путь
+                        user_site = site.getusersitepackages()
+                        if user_site and os.path.exists(user_site):
+                            if user_site not in sys.path:
+                                sys.path.insert(0, user_site)
+                            # Также добавляем через addsitedir для обработки .pth файлов
+                            site.addsitedir(user_site)
+                        
+                        # Очищаем кэш импортов для moviepy и его подмодулей
+                        modules_to_remove = [m for m in list(sys.modules.keys()) if m.startswith('moviepy')]
+                        for m in modules_to_remove:
+                            try:
+                                del sys.modules[m]
+                            except KeyError:
+                                pass
+                        
+                        # Небольшая задержка для завершения установки
+                        time.sleep(0.5)
+                        
+                        # Пробуем импортировать через importlib для более надежной загрузки
+                        try:
+                            spec = importlib.util.find_spec("moviepy.editor")
+                            if spec is None or spec.loader is None:
+                                raise ImportError("moviepy.editor не найден в sys.path")
+                            
+                            moviepy_module = importlib.import_module("moviepy.editor")
+                            VideoFileClip = moviepy_module.VideoFileClip
+                            self.VideoFileClip = VideoFileClip
+                            self.moviepy_available = True
+                            logger.info("moviepy успешно установлен и загружен")
+                        except (ImportError, AttributeError):
+                            # Пробуем обычный импорт
+                            from moviepy.editor import VideoFileClip
+                            self.VideoFileClip = VideoFileClip
+                            self.moviepy_available = True
+                            logger.info("moviepy успешно установлен и загружен")
+                            
+                    except Exception as e:
+                        # Если не удалось загрузить, проверяем, что библиотека установлена
+                        logger.warning(f"Не удалось загрузить moviepy сразу после установки: {e}")
+                        check_result = subprocess.run(
+                            [sys.executable, "-m", "pip", "show", "moviepy"],
+                            capture_output=True,
+                            text=True,
+                            timeout=10
+                        )
+                        if check_result.returncode == 0:
+                            logger.info("moviepy установлен, но требуется перезапуск программы для загрузки модуля")
+                            return False, "moviepy установлен. Перезапустите программу для применения изменений, затем попробуйте конвертировать снова.", None
+                        else:
+                            return False, "Не удалось установить moviepy. Установите вручную: pip install moviepy", None
+                else:
+                    error_msg = result.stderr if result.stderr else result.stdout or "Неизвестная ошибка"
+                    logger.warning(f"Не удалось установить moviepy: {error_msg[:300]}")
+                    return False, f"Не удалось установить moviepy автоматически. Установите вручную: pip install moviepy", None
+            except subprocess.TimeoutExpired:
+                logger.error("Таймаут при установке moviepy")
+                return False, "Таймаут при установке moviepy. Установите вручную: pip install moviepy", None
+            except Exception as e:
+                logger.error(f"Ошибка при установке moviepy: {e}")
+                return False, f"Ошибка установки moviepy: {str(e)[:200]}. Установите вручную: pip install moviepy", None
+        
+        try:
+            # Нормализуем пути
+            file_path = os.path.abspath(file_path)
+            output_path = os.path.abspath(output_path)
+            
+            # Убеждаемся, что директория существует
+            output_dir = os.path.dirname(output_path)
+            if output_dir and not os.path.exists(output_dir):
+                os.makedirs(output_dir, exist_ok=True)
+            
+            logger.info(f"Конвертируем видео: {file_path} -> {output_path}")
+            
+            # Загружаем видео файл
+            video = self.VideoFileClip(file_path)
+            
+            try:
+                # Определяем параметры экспорта
+                format_name = target_ext[1:].lower()
+                codec = 'libx264'  # По умолчанию H.264
+                audio_codec = 'aac'  # По умолчанию AAC
+                
+                # Настройки для разных форматов
+                if format_name in ('mp4', 'm4v'):
+                    codec = 'libx264'
+                    audio_codec = 'aac'
+                elif format_name == 'avi':
+                    codec = 'libx264'
+                    audio_codec = 'mp3'
+                elif format_name in ('webm', 'ogv'):
+                    codec = 'libvpx-vp9'
+                    audio_codec = 'libopus'
+                elif format_name == 'mkv':
+                    codec = 'libx264'
+                    audio_codec = 'libmp3lame'
+                
+                # Преобразуем качество (1-100) в битрейт
+                # Качество 95 -> высокий битрейт, 50 -> средний
+                if quality >= 90:
+                    bitrate = '5000k'
+                elif quality >= 70:
+                    bitrate = '3000k'
+                elif quality >= 50:
+                    bitrate = '2000k'
+                else:
+                    bitrate = '1000k'
+                
+                # Экспортируем видео
+                video.write_videofile(
+                    output_path,
+                    codec=codec,
+                    audio_codec=audio_codec,
+                    bitrate=bitrate,
+                    logger=None  # Отключаем логирование moviepy
+                )
+                
+                # Проверяем, что файл создан
+                if os.path.exists(output_path):
+                    logger.info(f"Видео успешно конвертировано: {output_path}")
+                    return True, "Видео файл успешно конвертирован", output_path
+                else:
+                    return False, "Файл не был создан", None
+                    
+            finally:
+                # Освобождаем ресурсы
+                video.close()
+                
+        except Exception as e:
+            logger.error(f"Ошибка при конвертации видео {file_path}: {e}", exc_info=True)
+            error_msg = str(e)
+            # Проверяем, требуется ли ffmpeg
+            if "ffmpeg" in error_msg.lower() or "ffprobe" in error_msg.lower():
+                return False, "Требуется FFmpeg. Установите FFmpeg: https://ffmpeg.org/download.html", None
             return False, f"Ошибка конвертации: {error_msg}", None
 
