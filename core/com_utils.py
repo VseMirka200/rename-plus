@@ -108,6 +108,27 @@ def create_word_application(com_client: Any) -> Tuple[Optional[Any], Optional[st
     if not word_installed:
         return None, install_msg
     
+    # Инициализируем COM перед созданием Word объекта
+    pythoncom_module = None
+    com_initialized = False
+    try:
+        import pythoncom
+        pythoncom_module = pythoncom
+        # Пробуем использовать CoInitializeEx (более надежный метод)
+        if hasattr(pythoncom_module, 'CoInitializeEx'):
+            try:
+                # COINIT_APARTMENTTHREADED = 2
+                pythoncom_module.CoInitializeEx(2)
+            except (AttributeError, ValueError):
+                pythoncom_module.CoInitialize()
+        else:
+            pythoncom_module.CoInitialize()
+    except Exception as init_error:
+        # Если уже инициализирован, это нормально
+        if "already initialized" not in str(init_error).lower() and "RPC_E_CHANGED_MODE" not in str(init_error):
+            logger.warning(f"Ошибка инициализации COM: {init_error}")
+    com_initialized = True
+    
     # Пробуем разные способы создания Word объекта
     try:
         word = com_client.Dispatch('Word.Application')
@@ -133,6 +154,13 @@ def create_word_application(com_client: Any) -> Tuple[Optional[Any], Optional[st
             except Exception as e3:
                 error_msg3 = str(e3)
                 logger.error(f"Все способы создания Word.Application не удались. Ошибки: {error_msg1}, {error_msg2}, {error_msg3}")
+                
+                # Освобождаем COM если Word не был создан
+                if com_initialized and pythoncom_module:
+                    try:
+                        pythoncom_module.CoUninitialize()
+                    except Exception:
+                        pass
                 
                 # Формируем понятное сообщение об ошибке
                 if any(keyword in error_msg1.lower() for keyword in ['invalid class string', 'clsid', 'class not registered', 'progid']):

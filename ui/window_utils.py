@@ -5,6 +5,7 @@
 """
 
 import os
+import sys
 import tkinter as tk
 from typing import Optional, Tuple
 
@@ -14,6 +15,17 @@ try:
     HAS_PIL = True
 except ImportError:
     HAS_PIL = False
+
+# Попытка импортировать ctypes для Windows API (для установки иконки в панели задач)
+if sys.platform == 'win32':
+    try:
+        import ctypes
+        from ctypes import wintypes
+        HAS_CTYPES = True
+    except ImportError:
+        HAS_CTYPES = False
+else:
+    HAS_CTYPES = False
 
 # Константы для прокрутки мыши
 MOUSEWHEEL_DELTA_DIVISOR = 120  # Делитель для нормализации прокрутки в Windows
@@ -84,6 +96,7 @@ def set_window_icon(window: tk.Tk, icon_photos_list: Optional[list] = None) -> N
     Пытается загрузить иконку из файлов Логотип.ico или Логотип.png.
     Использует iconbitmap для Windows (лучше всего для панели задач) и
     iconphoto для кроссплатформенной поддержки.
+    Также использует Windows API для более надежной установки иконки в панели задач.
     
     Args:
         window: Окно Tkinter для установки иконки
@@ -101,8 +114,44 @@ def set_window_icon(window: tk.Tk, icon_photos_list: Optional[list] = None) -> N
             try:
                 # Преобразуем в абсолютный путь для надежности
                 ico_path = os.path.abspath(ico_path)
+                
+                # Используем Windows API для установки иконки в панели задач (более надежно)
+                if sys.platform == 'win32' and HAS_CTYPES:
+                    try:
+                        # Получаем HWND окна
+                        window.update_idletasks()
+                        # Получаем дескриптор окна через winfo_id
+                        try:
+                            hwnd = ctypes.windll.user32.GetParent(window.winfo_id())
+                            if hwnd == 0:
+                                # Если GetParent вернул 0, пробуем другой способ
+                                hwnd = ctypes.windll.user32.FindWindowW(None, window.title())
+                        except Exception:
+                            # Если не удалось получить HWND, пропускаем Windows API
+                            hwnd = None
+                        
+                        if hwnd:
+                            # Загружаем иконку через LoadImage
+                            # IMAGE_ICON = 1, LR_LOADFROMFILE = 0x0010, LR_DEFAULTSIZE = 0x0040
+                            hicon_small = ctypes.windll.user32.LoadImageW(
+                                0, ico_path, 1, 0, 0, 0x0010 | 0x0040
+                            )
+                            hicon_big = ctypes.windll.user32.LoadImageW(
+                                0, ico_path, 1, 0, 0, 0x0010 | 0x0040
+                            )
+                            
+                            if hicon_small:
+                                # WM_SETICON = 0x0080, ICON_SMALL = 0, ICON_BIG = 1
+                                ctypes.windll.user32.SendMessageW(hwnd, 0x0080, 0, hicon_small)
+                            if hicon_big:
+                                ctypes.windll.user32.SendMessageW(hwnd, 0x0080, 1, hicon_big)
+                    except Exception as api_error:
+                        # Если Windows API не сработал, используем стандартный метод
+                        pass
+                
                 # iconbitmap устанавливает иконку для окна и панели задач в Windows
                 window.iconbitmap(ico_path)
+                
                 # Также устанавливаем как иконку по умолчанию для всех окон
                 if HAS_PIL:
                     try:
@@ -113,6 +162,9 @@ def set_window_icon(window: tk.Tk, icon_photos_list: Optional[list] = None) -> N
                             icon_photos_list.append(photo)
                     except Exception:
                         pass
+                
+                # Принудительно обновляем окно для применения иконки
+                window.update_idletasks()
                 return
             except Exception as e:
                 print(f"Не удалось установить иконку через iconbitmap: {e}")
@@ -130,6 +182,8 @@ def set_window_icon(window: tk.Tk, icon_photos_list: Optional[list] = None) -> N
                     window.iconphoto(True, photo)  # True = установить как иконку по умолчанию для всех окон
                     if icon_photos_list is not None:
                         icon_photos_list.append(photo)
+                    # Принудительно обновляем окно для применения иконки
+                    window.update_idletasks()
                 except Exception as e:
                     print(f"Не удалось установить PNG иконку через PIL: {e}")
             else:
@@ -138,6 +192,8 @@ def set_window_icon(window: tk.Tk, icon_photos_list: Optional[list] = None) -> N
                     window.iconphoto(True, photo)  # True = установить как иконку по умолчанию
                     if icon_photos_list is not None:
                         icon_photos_list.append(photo)
+                    # Принудительно обновляем окно для применения иконки
+                    window.update_idletasks()
                 except Exception as e:
                     print(f"Не удалось установить PNG иконку: {e}")
     except Exception as e:

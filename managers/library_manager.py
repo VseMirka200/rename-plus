@@ -374,9 +374,17 @@ class LibraryManager:
             # Специальная обработка для pdf2docx
             if import_name == 'pdf2docx':
                 try:
+                    # pdf2docx требует PyMuPDF (модуль fitz)
+                    try:
+                        import fitz  # type: ignore
+                    except ImportError:
+                        # PyMuPDF не установлен, но pdf2docx может быть установлен
+                        logger.debug("pdf2docx требует PyMuPDF (fitz), но он не установлен")
+                        return False
                     from pdf2docx import Converter  # type: ignore
                     return True
-                except (ImportError, AttributeError):
+                except (ImportError, AttributeError) as e:
+                    logger.debug(f"Ошибка импорта pdf2docx: {e}")
                     return False
             
             # Специальная обработка для PIL (Pillow)
@@ -619,7 +627,9 @@ class LibraryManager:
             
             # Специальная обработка для pdf2docx
             numpy_installed = False
+            pymupdf_installed = False
             if lib_name == 'pdf2docx':
+                # Проверяем и устанавливаем numpy
                 try:
                     import numpy  # type: ignore
                     numpy_installed = True
@@ -650,6 +660,29 @@ class LibraryManager:
                         detailed_error = '\n'.join(key_errors[:5]) if key_errors else numpy_error[:400]
                         return False, f"Не удалось установить зависимость numpy:\n{detailed_error}\n\nПопробуйте установить вручную:\npip install --user numpy\n\nЕсли ошибка связана с компиляцией, используйте предварительно скомпилированные пакеты или установите Visual Studio Build Tools."
                     numpy_installed = True
+                
+                # Проверяем и устанавливаем PyMuPDF (требуется для pdf2docx)
+                try:
+                    import fitz  # type: ignore
+                    pymupdf_installed = True
+                    logger.debug("PyMuPDF (fitz) уже установлен")
+                except ImportError:
+                    # Устанавливаем PyMuPDF
+                    logger.info("Установка PyMuPDF (зависимость для pdf2docx)...")
+                    pymupdf_cmd = self._get_pip_install_args('PyMuPDF')
+                    pymupdf_result = subprocess.run(
+                        pymupdf_cmd,
+                        capture_output=True,
+                        text=True,
+                        timeout=300
+                    )
+                    if pymupdf_result.returncode != 0:
+                        pymupdf_error = pymupdf_result.stderr if pymupdf_result.stderr else pymupdf_result.stdout or "Неизвестная ошибка"
+                        logger.warning(f"Не удалось установить PyMuPDF: {pymupdf_error[:500]}")
+                        # Не критично, продолжаем установку pdf2docx
+                    else:
+                        pymupdf_installed = True
+                        logger.info("PyMuPDF успешно установлен")
             
             logger.info(f"Установка библиотеки {lib_name}...")
             
@@ -934,8 +967,9 @@ class LibraryManager:
                 logger.info(f"Установка {lib}...")
                 
                 # Специальная обработка для библиотек с зависимостями
-                # pdf2docx требует numpy
+                # pdf2docx требует numpy и PyMuPDF
                 if lib == 'pdf2docx':
+                    # Устанавливаем numpy
                     try:
                         import numpy  # type: ignore
                     except ImportError:
@@ -953,6 +987,25 @@ class LibraryManager:
                                 logger.warning(f"Не удалось установить numpy: {numpy_result.stderr[:200] if numpy_result.stderr else 'Неизвестная ошибка'}")
                         except Exception as numpy_e:
                             logger.warning(f"Ошибка установки numpy: {numpy_e}")
+                    
+                    # Устанавливаем PyMuPDF
+                    try:
+                        import fitz  # type: ignore
+                    except ImportError:
+                        try:
+                            logger.info("Установка PyMuPDF (зависимость для pdf2docx)...")
+                            pymupdf_result = subprocess.run(
+                                self._get_pip_install_args('PyMuPDF')[:-1] + ['--quiet', '--no-warn-script-location'],
+                                capture_output=True,
+                                text=True,
+                                timeout=300
+                            )
+                            if pymupdf_result.returncode == 0:
+                                logger.info("✓ PyMuPDF установлен как зависимость")
+                            else:
+                                logger.warning(f"Не удалось установить PyMuPDF: {pymupdf_result.stderr[:200] if pymupdf_result.stderr else 'Неизвестная ошибка'}")
+                        except Exception as pymupdf_e:
+                            logger.warning(f"Ошибка установки PyMuPDF: {pymupdf_e}")
                 
                 # pydub может работать без ffmpeg для некоторых форматов, но лучше установить базовые зависимости
                 # moviepy требует несколько зависимостей, но они обычно устанавливаются автоматически
@@ -1339,6 +1392,33 @@ class LibraryManager:
                                     self.root.after(0, lambda e=error_summary: progress_text.insert(tk.END, f"⚠ Предупреждение: не удалось установить numpy:\n{e[:400]}\n"))
                             except Exception as numpy_e:
                                 self.root.after(0, lambda err=str(numpy_e)[:100]: progress_text.insert(tk.END, f"⚠ Предупреждение: ошибка установки numpy: {err}\n"))
+                        
+                        # Пробуем установить PyMuPDF если его нет
+                        pymupdf_installed = False
+                        try:
+                            import fitz  # type: ignore
+                            pymupdf_installed = True
+                        except ImportError:
+                            try:
+                                self.root.after(0, lambda: progress_text.insert(tk.END, f"Установка PyMuPDF (зависимость для pdf2docx)...\n"))
+                                self.root.after(0, lambda: progress_text.see(tk.END))
+                                self.root.after(0, lambda: progress_window.update())
+                                
+                                pymupdf_cmd = self._get_pip_install_args('PyMuPDF')
+                                pymupdf_result = subprocess.run(
+                                    pymupdf_cmd,
+                                    capture_output=True,
+                                    text=True,
+                                    timeout=300
+                                )
+                                if pymupdf_result.returncode == 0:
+                                    self.root.after(0, lambda: progress_text.insert(tk.END, f"✓ PyMuPDF установлен как зависимость\n"))
+                                    pymupdf_installed = True
+                                else:
+                                    pymupdf_error = pymupdf_result.stderr if pymupdf_result.stderr else pymupdf_result.stdout or "Неизвестная ошибка"
+                                    self.root.after(0, lambda e=pymupdf_error[:300]: progress_text.insert(tk.END, f"⚠ Предупреждение: не удалось установить PyMuPDF:\n{e[:400]}\n"))
+                            except Exception as pymupdf_e:
+                                self.root.after(0, lambda err=str(pymupdf_e)[:100]: progress_text.insert(tk.END, f"⚠ Предупреждение: ошибка установки PyMuPDF: {err}\n"))
                     
                     # Для pdf2docx: всегда используем --only-binary :all: чтобы использовать только wheels
                     if lib == 'pdf2docx':
@@ -1517,9 +1597,11 @@ class LibraryManager:
                     if 'pdf2docx' in failed_libs:
                         self.root.after(0, lambda: progress_text.insert(tk.END, 
                             f"Для pdf2docx может потребоваться:\n"
-                            f"  1. Сначала установите numpy:\n"
-                            f"     pip install --user numpy\n\n"
+                            f"  1. Сначала установите зависимости:\n"
+                            f"     pip install --user numpy PyMuPDF\n\n"
                             f"  2. Затем установите pdf2docx:\n"
+                            f"     pip install --user pdf2docx\n\n"
+                            f"  Или установите все сразу:\n"
                             f"     pip install --user pdf2docx\n\n"
                             f"  Если возникает ошибка компиляции, установите Visual Studio Build Tools\n"
                             f"  или используйте предварительно скомпилированные пакеты:\n"

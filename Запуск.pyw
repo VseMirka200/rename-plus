@@ -11,15 +11,18 @@
 """
 
 import logging
-import sys
 import os
+import sys
 
 # Настройка логирования
 logging.basicConfig(
     level=logging.WARNING,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler(os.path.join(os.path.expanduser("~"), ".nazovi.log"), encoding='utf-8'),
+        logging.FileHandler(
+            os.path.join(os.path.expanduser("~"), ".nazovi.log"),
+            encoding='utf-8'
+        ),
         logging.StreamHandler()
     ]
 )
@@ -33,8 +36,12 @@ if sys.platform == 'win32':
         # Настройка кодировки для stdout/stderr в Windows
         if sys.stdout.encoding != 'utf-8':
             import io
-            sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
-            sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
+            sys.stdout = io.TextIOWrapper(
+                sys.stdout.buffer, encoding='utf-8'
+            )
+            sys.stderr = io.TextIOWrapper(
+                sys.stderr.buffer, encoding='utf-8'
+            )
     except Exception as e:
         logger.debug(f"Не удалось установить кодировку: {e}")
 
@@ -52,8 +59,8 @@ except Exception as e:
     logger.error(f"Критическая ошибка при запуске программы: {e}", exc_info=True)
     # Если произошла ошибка, показываем сообщение
     try:
-        import tkinter.messagebox as messagebox
         import tkinter as tk
+        import tkinter.messagebox as messagebox
         
         root = tk.Tk()
         root.withdraw()  # Скрываем главное окно

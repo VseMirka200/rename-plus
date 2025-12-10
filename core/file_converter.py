@@ -447,6 +447,34 @@ class FileConverter:
                     return self.docx2pdf_available
                 # PDF в DOCX
                 if source_ext == '.pdf' and target_ext == '.docx':
+                    # Динамическая проверка доступности pdf2docx (на случай если библиотека была установлена после инициализации)
+                    if not self.pdf2docx_available or self.Converter is None:
+                        try:
+                            # Обновляем sys.path для обнаружения новых модулей
+                            try:
+                                import site
+                                user_site = site.getusersitepackages()
+                                if user_site and user_site not in sys.path:
+                                    sys.path.insert(0, user_site)
+                                    site.addsitedir(user_site)
+                            except Exception:
+                                pass
+                            
+                            # Очищаем кэш импортов для pdf2docx
+                            modules_to_remove = [m for m in list(sys.modules.keys()) if m.startswith('pdf2docx')]
+                            for m in modules_to_remove:
+                                try:
+                                    del sys.modules[m]
+                                except KeyError:
+                                    pass
+                            
+                            # Пробуем импортировать pdf2docx
+                            from pdf2docx import Converter
+                            self.Converter = Converter
+                            self.pdf2docx_available = True
+                            logger.info("pdf2docx успешно импортирован (обнаружен в can_convert)")
+                        except ImportError:
+                            return False
                     return self.pdf2docx_available
                 # Для других форматов документов
                 if self.docx_available:
@@ -905,7 +933,28 @@ class FileConverter:
                 tried_methods.append("win32com")
                 logger.info(f"Пробуем конвертировать через win32com: {file_path} -> {output_path}")
                 word = None
+                com_initialized = False
+                pythoncom_module = None
                 try:
+                    # Инициализируем COM в текущем потоке для win32com
+                    try:
+                        import pythoncom
+                        pythoncom_module = pythoncom
+                        # Пробуем использовать CoInitializeEx (более надежный метод)
+                        if hasattr(pythoncom_module, 'CoInitializeEx'):
+                            try:
+                                # COINIT_APARTMENTTHREADED = 2
+                                pythoncom_module.CoInitializeEx(2)
+                            except (AttributeError, ValueError):
+                                pythoncom_module.CoInitialize()
+                        else:
+                            pythoncom_module.CoInitialize()
+                    except Exception as init_error:
+                        # Если уже инициализирован, это нормально
+                        if "already initialized" not in str(init_error).lower() and "RPC_E_CHANGED_MODE" not in str(init_error):
+                            logger.warning(f"Ошибка инициализации COM для win32com: {init_error}")
+                    com_initialized = True
+                    
                     if HAS_COM_UTILS:
                         # Используем утилиты для создания Word объекта
                         word, error_msg = create_word_application(self.win32com)
@@ -950,6 +999,12 @@ class FileConverter:
                 finally:
                     if HAS_COM_UTILS and word:
                         cleanup_word_application(word)
+                    # Освобождаем COM для win32com
+                    if com_initialized and pythoncom_module:
+                        try:
+                            pythoncom_module.CoUninitialize()
+                        except Exception:
+                            pass
             
             # Метод 3: Пробуем comtypes (fallback для Windows)
             if not conversion_success and self.comtypes is not None and sys.platform == 'win32':
@@ -1019,6 +1074,16 @@ class FileConverter:
                         
                 except Exception as e:
                     # Очистка при ошибке
+                    error_msg = str(e)
+                    # Специальная обработка ошибки генерации кода в comtypes
+                    if "CodeGenerator" in error_msg and "NoneType" in error_msg:
+                        logger.error(f"Ошибка генерации кода в comtypes (известная проблема библиотеки): {error_msg}")
+                        logger.warning("comtypes не может сгенерировать код для Word интерфейсов. Пропускаем comtypes.")
+                    elif "CoInitialize" in error_msg:
+                        logger.error(f"Ошибка инициализации COM в comtypes: {error_msg}")
+                    else:
+                        logger.error(f"Ошибка при конвертации через comtypes: {error_msg}", exc_info=True)
+                    
                     if word:
                         try:
                             word.Quit(SaveChanges=False)
@@ -1034,14 +1099,34 @@ class FileConverter:
                             pass
                         com_initialized = False
                     
-                    logger.error(f"Ошибка при конвертации через comtypes: {e}", exc_info=True)
                     conversion_success = False
             
             # Если ни один метод не сработал, пробуем docx2pdf как последний fallback
             if not conversion_success and self.docx2pdf_convert is not None and source_ext == '.docx':
                 logger.info("Все COM методы не сработали, пробуем docx2pdf как fallback...")
                 tried_methods.append("docx2pdf")
+                docx2pdf_com_initialized = False
+                docx2pdf_pythoncom = None
                 try:
+                    # docx2pdf использует COM внутри, поэтому нужно инициализировать COM
+                    try:
+                        import pythoncom
+                        docx2pdf_pythoncom = pythoncom
+                        # Пробуем использовать CoInitializeEx (более надежный метод)
+                        if hasattr(pythoncom, 'CoInitializeEx'):
+                            try:
+                                # COINIT_APARTMENTTHREADED = 2
+                                pythoncom.CoInitializeEx(2)
+                            except (AttributeError, ValueError):
+                                pythoncom.CoInitialize()
+                        else:
+                            pythoncom.CoInitialize()
+                    except Exception as init_error:
+                        # Если уже инициализирован, это нормально
+                        if "already initialized" not in str(init_error).lower() and "RPC_E_CHANGED_MODE" not in str(init_error):
+                            logger.warning(f"Ошибка инициализации COM для docx2pdf: {init_error}")
+                    docx2pdf_com_initialized = True
+                    
                     output_dir = os.path.dirname(output_path)
                     if not output_dir:
                         output_dir = os.path.dirname(file_path)
@@ -1059,6 +1144,12 @@ class FileConverter:
                     finally:
                         sys.stdout = old_stdout
                         sys.stderr = old_stderr
+                        # Освобождаем COM после docx2pdf
+                        if docx2pdf_com_initialized and docx2pdf_pythoncom:
+                            try:
+                                docx2pdf_pythoncom.CoUninitialize()
+                            except Exception:
+                                pass
                     
                     if os.path.exists(output_path):
                         logger.info("docx2pdf успешно конвертировал файл")
@@ -1074,7 +1165,14 @@ class FileConverter:
                         logger.info("docx2pdf успешно конвертировал файл (найден в другой директории)")
                         return True, "Документ успешно конвертирован в PDF через docx2pdf", output_path
                 except Exception as e:
-                    logger.warning(f"docx2pdf также не сработал: {e}")
+                    error_msg = str(e)
+                    logger.warning(f"docx2pdf также не сработал: {error_msg}")
+                    # Освобождаем COM при ошибке
+                    if docx2pdf_com_initialized and docx2pdf_pythoncom:
+                        try:
+                            docx2pdf_pythoncom.CoUninitialize()
+                        except Exception:
+                            pass
             
             # Если все методы не сработали, формируем сообщение об ошибке
             if not conversion_success:
@@ -1140,8 +1238,34 @@ class FileConverter:
         Returns:
             Кортеж (успех, сообщение, путь к выходному файлу)
         """
-        if not self.pdf2docx_available:
-            return False, "Библиотека для конвертации PDF в DOCX не установлена. Установите pdf2docx", None
+        # Динамическая проверка и импорт pdf2docx (на случай если библиотека была установлена после инициализации)
+        if not self.pdf2docx_available or self.Converter is None:
+            try:
+                # Обновляем sys.path для обнаружения новых модулей
+                try:
+                    import site
+                    user_site = site.getusersitepackages()
+                    if user_site and user_site not in sys.path:
+                        sys.path.insert(0, user_site)
+                        site.addsitedir(user_site)
+                except Exception:
+                    pass
+                
+                # Очищаем кэш импортов для pdf2docx
+                modules_to_remove = [m for m in list(sys.modules.keys()) if m.startswith('pdf2docx')]
+                for m in modules_to_remove:
+                    try:
+                        del sys.modules[m]
+                    except KeyError:
+                        pass
+                
+                # Пробуем импортировать pdf2docx
+                from pdf2docx import Converter
+                self.Converter = Converter
+                self.pdf2docx_available = True
+                logger.info("pdf2docx успешно импортирован для конвертации PDF в DOCX")
+            except ImportError:
+                return False, "Библиотека для конвертации PDF в DOCX не установлена. Установите pdf2docx", None
         
         try:
             # Нормализуем пути

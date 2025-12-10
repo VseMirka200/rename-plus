@@ -4761,6 +4761,29 @@ class FileRenamerApp:
             
             def refresh_libraries_table():
                 """Обновление таблицы библиотек."""
+                # Инвалидируем кэш для принудительной проверки всех библиотек
+                self.library_manager.invalidate_cache()
+                
+                # Обновляем sys.path для обнаружения установленных библиотек
+                try:
+                    import site
+                    user_site = site.getusersitepackages()
+                    if user_site and user_site not in sys.path:
+                        sys.path.insert(0, user_site)
+                        site.addsitedir(user_site)
+                except Exception:
+                    pass
+                
+                # Очищаем кэш импортов для всех библиотек перед проверкой
+                all_libs_dict = self.library_manager.get_all_libraries()
+                for lib_name, import_name in all_libs_dict.items():
+                    modules_to_remove = [m for m in list(sys.modules.keys()) if m.startswith(import_name)]
+                    for m in modules_to_remove:
+                        try:
+                            del sys.modules[m]
+                        except KeyError:
+                            pass
+                
                 # Очистка таблицы
                 for item in libs_tree.get_children():
                     libs_tree.delete(item)
