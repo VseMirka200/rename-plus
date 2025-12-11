@@ -4,10 +4,14 @@ import logging
 import os
 import threading
 import tkinter as tk
-from typing import Callable, Optional
+from typing import Callable, Optional, TYPE_CHECKING
 
 # Попытка импортировать pystray
 HAS_PYSTRAY = False
+if TYPE_CHECKING:
+    import pystray
+    from pystray import MenuItem
+
 try:
     import pystray
     from pystray import MenuItem as item
@@ -15,6 +19,12 @@ try:
     HAS_PYSTRAY = True
 except ImportError:
     HAS_PYSTRAY = False
+    # Создаем заглушки для type hints, если pystray не установлен
+    class pystray:
+        class Icon:
+            pass
+        class MenuItem:
+            pass
 
 
 class TrayManager:
