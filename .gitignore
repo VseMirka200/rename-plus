@@ -82,6 +82,10 @@ Desktop.ini
 .nazovi_libs_installed.json
 .nazovi.log
 
+# Application data and logs directories
+data/
+logs/
+
 # Temporary files
 *.tmp
 *.temp

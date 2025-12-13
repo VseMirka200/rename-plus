@@ -10,6 +10,8 @@
 """
 
 import io
+import importlib
+import importlib.util
 import logging
 import os
 import shutil
@@ -1430,6 +1432,121 @@ class FileConverter:
                 return False, "Требуется FFmpeg. Установите FFmpeg: https://ffmpeg.org/download.html", None
             return False, f"Ошибка конвертации: {error_msg}", None
     
+    def _convert_video_via_subprocess(self, file_path: str, output_path: str, source_ext: str, 
+                                      target_ext: str, quality: int = 95) -> Tuple[bool, str, Optional[str]]:
+        """Конвертация видео через отдельный процесс Python (когда moviepy не может быть импортирован в текущем процессе).
+        
+        Args:
+            file_path: Путь к исходному видео файлу
+            output_path: Путь для сохранения
+            source_ext: Исходное расширение
+            target_ext: Целевое расширение
+            quality: Качество видео (1-100)
+            
+        Returns:
+            Кортеж (успех, сообщение, путь к выходному файлу)
+        """
+        try:
+            # Нормализуем пути
+            file_path = os.path.abspath(file_path)
+            output_path = os.path.abspath(output_path)
+            
+            # Убеждаемся, что директория существует
+            output_dir = os.path.dirname(output_path)
+            if output_dir and not os.path.exists(output_dir):
+                os.makedirs(output_dir, exist_ok=True)
+            
+            logger.info(f"Конвертируем видео через subprocess: {file_path} -> {output_path}")
+            
+            # Определяем параметры экспорта
+            format_name = target_ext[1:].lower()
+            codec = 'libx264'  # По умолчанию H.264
+            audio_codec = 'aac'  # По умолчанию AAC
+            
+            # Настройки для разных форматов
+            if format_name in ('mp4', 'm4v'):
+                codec = 'libx264'
+                audio_codec = 'aac'
+            elif format_name == 'avi':
+                codec = 'libx264'
+                audio_codec = 'mp3'
+            elif format_name in ('webm', 'ogv'):
+                codec = 'libvpx-vp9'
+                audio_codec = 'libopus'
+            elif format_name == 'mkv':
+                codec = 'libx264'
+                audio_codec = 'libmp3lame'
+            
+            # Преобразуем качество (1-100) в битрейт
+            if quality >= 90:
+                bitrate = '5000k'
+            elif quality >= 70:
+                bitrate = '3000k'
+            elif quality >= 50:
+                bitrate = '2000k'
+            else:
+                bitrate = '1000k'
+            
+            # Создаем Python скрипт для конвертации
+            convert_script = f"""
+import sys
+import os
+from moviepy.editor import VideoFileClip
+
+file_path = r"{file_path}"
+output_path = r"{output_path}"
+codec = "{codec}"
+audio_codec = "{audio_codec}"
+bitrate = "{bitrate}"
+
+try:
+    video = VideoFileClip(file_path)
+    video.write_videofile(
+        output_path,
+        codec=codec,
+        audio_codec=audio_codec,
+        bitrate=bitrate,
+        logger=None
+    )
+    video.close()
+    if os.path.exists(output_path):
+        print("SUCCESS")
+    else:
+        print("ERROR: File not created")
+        sys.exit(1)
+except Exception as e:
+    print(f"ERROR: {{str(e)}}")
+    sys.exit(1)
+"""
+            
+            # Запускаем конвертацию в отдельном процессе
+            result = subprocess.run(
+                [sys.executable, "-c", convert_script],
+                capture_output=True,
+                text=True,
+                timeout=600  # Таймаут 10 минут для больших видео
+            )
+            
+            if result.returncode == 0 and 'SUCCESS' in result.stdout:
+                if os.path.exists(output_path):
+                    logger.info(f"Видео успешно конвертировано через subprocess: {output_path}")
+                    return True, "Видео файл успешно конвертирован", output_path
+                else:
+                    return False, "Файл не был создан", None
+            else:
+                error_msg = result.stderr if result.stderr else result.stdout or "Неизвестная ошибка"
+                logger.error(f"Ошибка конвертации через subprocess: {error_msg}")
+                if "ffmpeg" in error_msg.lower() or "ffprobe" in error_msg.lower():
+                    return False, "Требуется FFmpeg. Установите FFmpeg: https://ffmpeg.org/download.html", None
+                return False, f"Ошибка конвертации: {error_msg[:200]}", None
+                
+        except subprocess.TimeoutExpired:
+            logger.error("Таймаут при конвертации видео через subprocess")
+            return False, "Таймаут при конвертации видео", None
+        except Exception as e:
+            logger.error(f"Ошибка при конвертации видео через subprocess {file_path}: {e}", exc_info=True)
+            return False, f"Ошибка конвертации: {str(e)[:200]}", None
+    
     def _convert_video(self, file_path: str, output_path: str, source_ext: str, 
                        target_ext: str, quality: int = 95) -> Tuple[bool, str, Optional[str]]:
         """Конвертация видео файлов.
@@ -1470,13 +1587,50 @@ class FileConverter:
                         import importlib
                         import importlib.util
                         
-                        # Добавляем пользовательский site-packages в путь
-                        user_site = site.getusersitepackages()
-                        if user_site and os.path.exists(user_site):
-                            if user_site not in sys.path:
+                        # Обновляем site-packages
+                        try:
+                            site.main()  # Перезагружает site-packages
+                        except Exception:
+                            pass
+                        
+                        # Получаем пути к site-packages
+                        try:
+                            user_site = site.getusersitepackages()
+                            if user_site and os.path.exists(user_site) and user_site not in sys.path:
                                 sys.path.insert(0, user_site)
-                            # Также добавляем через addsitedir для обработки .pth файлов
-                            site.addsitedir(user_site)
+                                site.addsitedir(user_site)
+                        except Exception:
+                            pass
+                        
+                        # Также добавляем стандартные пути site-packages
+                        try:
+                            for site_dir in site.getsitepackages():
+                                if site_dir not in sys.path:
+                                    sys.path.insert(0, site_dir)
+                                    site.addsitedir(site_dir)
+                        except Exception:
+                            pass
+                        
+                        # Получаем путь к установленному пакету через pip show
+                        try:
+                            show_result = subprocess.run(
+                                [sys.executable, "-m", "pip", "show", "moviepy"],
+                                capture_output=True,
+                                text=True,
+                                timeout=10
+                            )
+                            if show_result.returncode == 0:
+                                # Ищем Location в выводе pip show
+                                for line in show_result.stdout.split('\n'):
+                                    if line.startswith('Location:'):
+                                        location = line.split(':', 1)[1].strip()
+                                        if location and os.path.exists(location) and location not in sys.path:
+                                            sys.path.insert(0, location)
+                                            site.addsitedir(location)
+                                            logger.debug(f"Добавлен путь в sys.path: {location}")
+                                        break
+                        except (OSError, subprocess.SubprocessError, AttributeError) as e:
+                            logger.debug(f"Не удалось обновить sys.path через pip show: {e}")
                         
                         # Очищаем кэш импортов для moviepy и его подмодулей
                         modules_to_remove = [m for m in list(sys.modules.keys()) if m.startswith('moviepy')]
@@ -1486,30 +1640,144 @@ class FileConverter:
                             except KeyError:
                                 pass
                         
-                        # Небольшая задержка для завершения установки
+                        # Небольшая задержка для завершения установки и обновления sys.path
+                        time.sleep(2.0)  # Увеличиваем задержку для надежности
+                        
+                        # Пробуем проверить импорт через отдельный процесс Python
+                        # Это более надежный способ, так как новый процесс увидит установленный пакет
+                        try:
+                            check_import_cmd = [
+                                sys.executable, "-c",
+                                "import moviepy.editor; print('OK')"
+                            ]
+                            check_result = subprocess.run(
+                                check_import_cmd,
+                                capture_output=True,
+                                text=True,
+                                timeout=10
+                            )
+                            if check_result.returncode == 0 and 'OK' in check_result.stdout:
+                                # Модуль доступен в новом процессе, обновляем sys.path еще раз
+                                try:
+                                    site.main()
+                                    # Получаем путь еще раз
+                                    show_result = subprocess.run(
+                                        [sys.executable, "-m", "pip", "show", "moviepy"],
+                                        capture_output=True,
+                                        text=True,
+                                        timeout=10
+                                    )
+                                    if show_result.returncode == 0:
+                                        for line in show_result.stdout.split('\n'):
+                                            if line.startswith('Location:'):
+                                                location = line.split(':', 1)[1].strip()
+                                                if location and os.path.exists(location):
+                                                    if location not in sys.path:
+                                                        sys.path.insert(0, location)
+                                                        site.addsitedir(location)
+                                                    # Также добавляем moviepy подпапку если есть
+                                                    moviepy_path = os.path.join(location, 'moviepy')
+                                                    if os.path.exists(moviepy_path) and moviepy_path not in sys.path:
+                                                        sys.path.insert(0, moviepy_path)
+                                                break
+                                except Exception:
+                                    pass
+                        except Exception:
+                            pass
+                        
+                        # Удаляем все модули moviepy из кеша перед импортом
+                        modules_to_remove = [m for m in list(sys.modules.keys()) if m.startswith('moviepy')]
+                        for m in modules_to_remove:
+                            try:
+                                del sys.modules[m]
+                            except KeyError:
+                                pass
+                        
+                        # Дополнительная задержка после очистки кеша
                         time.sleep(0.5)
                         
                         # Пробуем импортировать через importlib для более надежной загрузки
                         try:
-                            spec = importlib.util.find_spec("moviepy.editor")
-                            if spec is None or spec.loader is None:
-                                raise ImportError("moviepy.editor не найден в sys.path")
+                            # Сначала пробуем найти спецификацию модуля moviepy (не moviepy.editor)
+                            spec = importlib.util.find_spec("moviepy")
+                            if spec is None:
+                                # Пробуем еще раз с задержкой
+                                time.sleep(0.5)
+                                spec = importlib.util.find_spec("moviepy")
                             
-                            moviepy_module = importlib.import_module("moviepy.editor")
-                            VideoFileClip = moviepy_module.VideoFileClip
-                            self.VideoFileClip = VideoFileClip
-                            self.moviepy_available = True
-                            logger.info("moviepy успешно установлен и загружен")
-                        except (ImportError, AttributeError):
-                            # Пробуем обычный импорт
-                            from moviepy.editor import VideoFileClip
-                            self.VideoFileClip = VideoFileClip
-                            self.moviepy_available = True
-                            logger.info("moviepy успешно установлен и загружен")
+                            if spec is not None and spec.origin:
+                                # Загружаем модуль через importlib
+                                try:
+                                    # Сначала импортируем базовый модуль
+                                    importlib.import_module("moviepy")
+                                    # Затем импортируем editor
+                                    moviepy_module = importlib.import_module("moviepy.editor")
+                                    VideoFileClip = moviepy_module.VideoFileClip
+                                    self.VideoFileClip = VideoFileClip
+                                    self.moviepy_available = True
+                                    logger.info("moviepy успешно установлен и загружен")
+                                except (ImportError, AttributeError) as import_err:
+                                    # Пробуем обычный импорт
+                                    from moviepy.editor import VideoFileClip  # type: ignore
+                                    self.VideoFileClip = VideoFileClip
+                                    self.moviepy_available = True
+                                    logger.info("moviepy успешно установлен и загружен (обычный импорт)")
+                            else:
+                                # Пробуем обычный импорт даже если spec не найден
+                                try:
+                                    from moviepy.editor import VideoFileClip  # type: ignore
+                                    self.VideoFileClip = VideoFileClip
+                                    self.moviepy_available = True
+                                    logger.info("moviepy успешно установлен и загружен (fallback импорт)")
+                                except ImportError:
+                                    raise ImportError("moviepy.editor не найден в sys.path после установки")
+                        except (ImportError, AttributeError) as e:
+                            # Последняя попытка с дополнительной задержкой и обновлением sys.path
+                            time.sleep(1)
+                            try:
+                                # Обновляем sys.path еще раз
+                                site.main()
+                                
+                                # Очищаем кеш еще раз
+                                modules_to_remove = [m for m in list(sys.modules.keys()) if m.startswith('moviepy')]
+                                for m in modules_to_remove:
+                                    try:
+                                        del sys.modules[m]
+                                    except KeyError:
+                                        pass
+                                
+                                from moviepy.editor import VideoFileClip  # type: ignore
+                                self.VideoFileClip = VideoFileClip
+                                self.moviepy_available = True
+                                logger.info("moviepy успешно установлен и загружен (последняя попытка)")
+                            except ImportError:
+                                raise e  # Пробрасываем исходную ошибку
                             
                     except Exception as e:
                         # Если не удалось загрузить, проверяем, что библиотека установлена
                         logger.warning(f"Не удалось загрузить moviepy сразу после установки: {e}")
+                        
+                        # Проверяем через отдельный процесс Python, доступен ли moviepy
+                        try:
+                            check_import_cmd = [
+                                sys.executable, "-c",
+                                "import moviepy.editor; print('IMPORT_OK')"
+                            ]
+                            check_import_result = subprocess.run(
+                                check_import_cmd,
+                                capture_output=True,
+                                text=True,
+                                timeout=10
+                            )
+                            if check_import_result.returncode == 0 and 'IMPORT_OK' in check_import_result.stdout:
+                                # Модуль доступен в новом процессе, но не в текущем
+                                # Запускаем конвертацию в отдельном процессе Python
+                                logger.info("moviepy установлен и доступен в новом процессе, запускаем конвертацию через subprocess")
+                                return self._convert_video_via_subprocess(file_path, output_path, source_ext, target_ext, quality)
+                        except Exception:
+                            pass
+                        
+                        # Проверяем через pip show
                         check_result = subprocess.run(
                             [sys.executable, "-m", "pip", "show", "moviepy"],
                             capture_output=True,
@@ -1517,8 +1785,27 @@ class FileConverter:
                             timeout=10
                         )
                         if check_result.returncode == 0:
+                            # moviepy установлен, но не может быть импортирован в текущем процессе
+                            # Пробуем запустить конвертацию через subprocess
+                            logger.info("moviepy установлен, но не может быть импортирован. Пробуем конвертацию через subprocess")
+                            try:
+                                # Проверяем, доступен ли moviepy в новом процессе
+                                check_import_cmd = [
+                                    sys.executable, "-c",
+                                    "import moviepy.editor; print('IMPORT_OK')"
+                                ]
+                                check_import_result = subprocess.run(
+                                    check_import_cmd,
+                                    capture_output=True,
+                                    text=True,
+                                    timeout=10
+                                )
+                                if check_import_result.returncode == 0 and 'IMPORT_OK' in check_import_result.stdout:
+                                    return self._convert_video_via_subprocess(file_path, output_path, source_ext, target_ext, quality)
+                            except Exception:
+                                pass
                             logger.info("moviepy установлен, но требуется перезапуск программы для загрузки модуля")
-                            return False, "moviepy установлен. Перезапустите программу для применения изменений, затем попробуйте конвертировать снова.", None
+                            return False, "moviepy установлен. Перезапустите программу.", None
                         else:
                             return False, "Не удалось установить moviepy. Установите вручную: pip install moviepy", None
                 else:

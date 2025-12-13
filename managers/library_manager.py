@@ -71,9 +71,19 @@ class LibraryManager:
         """
         self.root = root
         self.log = log_callback or (lambda msg: print(msg))
-        self.libs_check_file = os.path.join(
-            os.path.expanduser("~"), ".nazovi_libs_installed.json"
-        )
+        try:
+            from config.constants import get_libs_installed_file_path
+            self.libs_check_file = get_libs_installed_file_path()
+        except ImportError:
+            # Fallback если константы не загружены
+            app_data_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            data_dir = os.path.join(app_data_dir, "data")
+            if not os.path.exists(data_dir):
+                try:
+                    os.makedirs(data_dir, exist_ok=True)
+                except Exception:
+                    pass
+            self.libs_check_file = os.path.join(data_dir, "rename-plus_libs_installed.json")
         # Время жизни кэша проверки библиотек (в днях)
         self.cache_ttl_days = 7
         # Определяем, запущена ли программа в виртуальном окружении
@@ -853,10 +863,13 @@ class LibraryManager:
         """Проверка и автоматическая установка необходимых библиотек.
         
         Args:
-            install_optional: Устанавливать ли опциональные библиотеки
+            install_optional: Устанавливать ли опциональные библиотеки (всегда True - все библиотеки устанавливаются автоматически)
             silent: Не показывать окна, только логировать
             force_check: Принудительная проверка без использования кэша
         """
+        # Всегда устанавливаем все опциональные библиотеки автоматически
+        install_optional = True
+        
         try:
             # Если force_check=True, инвалидируем кэш перед проверкой
             if force_check:
@@ -917,27 +930,35 @@ class LibraryManager:
                     logger.info("Все необходимые библиотеки установлены")
                 return True
             
+            # Всегда устанавливаем все библиотеки автоматически
             # Если это не первый запуск, используем тихий режим (установка в фоне)
             if not self.is_first_run():
                 silent = True
                 logger.info("Не первый запуск - установка библиотек в фоновом режиме")
             
-            if silent:
-                # В тихом режиме устанавливаем автоматически в фоне
-                if required_to_install or optional_to_install:
-                    logger.info(f"Автоматическая установка библиотек: {', '.join(required_to_install + optional_to_install)}")
-                    # Запускаем установку в отдельном потоке
+            # Устанавливаем все недостающие библиотеки (обязательные и опциональные)
+            if required_to_install or optional_to_install:
+                all_to_install = required_to_install + optional_to_install
+                logger.info(f"Автоматическая установка библиотек: {', '.join(all_to_install)}")
+                
+                if silent:
+                    # В тихом режиме устанавливаем автоматически в фоне
                     threading.Thread(
                         target=self._install_libraries_silent,
-                        args=(required_to_install + optional_to_install,),
+                        args=(all_to_install,),
                         daemon=True
                     ).start()
+                else:
+                    # Показываем окно установки только при первом запуске
+                    self._show_install_window(required_to_install, optional_to_install)
+                    # После установки отмечаем первый запуск как завершенный
+                    self.mark_first_run_completed()
                 return True
             
-            # Показываем окно установки только при первом запуске
-            self._show_install_window(required_to_install, optional_to_install)
-            # После установки отмечаем первый запуск как завершенный
-            self.mark_first_run_completed()
+            # Если дошли сюда, значит все библиотеки уже установлены
+            # Отмечаем первый запуск как завершенный
+            if self.is_first_run():
+                self.mark_first_run_completed()
             return True
             
         except Exception as e:

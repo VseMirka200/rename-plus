@@ -7,7 +7,9 @@
 
 import logging
 import os
+import sys
 import threading
+from collections import OrderedDict
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Set
 
@@ -22,7 +24,30 @@ except ImportError:
     HAS_BACKUP = False
 
 # Кэш для нормализованных путей (для оптимизации проверки дубликатов)
-_path_cache: Set[str] = set()
+# Используем OrderedDict для LRU кеша
+from collections import OrderedDict
+try:
+    from config.constants import MAX_PATH_CACHE_SIZE
+    _MAX_CACHE_SIZE = MAX_PATH_CACHE_SIZE
+except ImportError:
+    _MAX_CACHE_SIZE = 10000
+
+_path_cache: OrderedDict[str, None] = OrderedDict()
+
+def _add_to_path_cache(path: str) -> None:
+    """Добавление пути в кеш с ограничением размера.
+    
+    Args:
+        path: Нормализованный путь для добавления
+    """
+    if len(_path_cache) >= _MAX_CACHE_SIZE:
+        # Удаляем старейший элемент (FIFO)
+        _path_cache.popitem(last=False)
+    _path_cache[path] = None
+
+def _clear_path_cache() -> None:
+    """Очистка кеша путей."""
+    _path_cache.clear()
 
 # Импортируем константы из config
 try:
@@ -61,7 +86,7 @@ def add_file_to_list(
     except (OSError, ValueError):
         return None
     
-    # Проверка на дубликаты - используем set для O(1) проверки
+    # Проверка на дубликаты - используем OrderedDict для O(1) проверки
     normalized_path = os.path.normpath(os.path.abspath(file_path))
     
     # Используем переданный кэш или создаем из списка файлов
@@ -69,11 +94,13 @@ def add_file_to_list(
         path_cache = {os.path.normpath(os.path.abspath(f.get('full_path') or f.get('path', '')))
                      for f in files_list if f.get('full_path') or f.get('path')}
     
-    if normalized_path in path_cache:
+    if normalized_path in path_cache or normalized_path in _path_cache:
         return None
     
-    # Добавляем путь в кэш
-    path_cache.add(normalized_path)
+    # Добавляем путь в кэш с ограничением размера
+    _add_to_path_cache(normalized_path)
+    if isinstance(path_cache, set):
+        path_cache.add(normalized_path)
     
     # Получаем имя файла и расширение
     path_obj = Path(file_path)
@@ -120,13 +147,40 @@ def validate_filename(name: str, extension: str, path: str, index: int) -> str:
         return f"Ошибка: зарезервированное имя '{name}'"
     
     # Проверка длины имени (Windows ограничение: 255 символов для полного пути)
+    try:
+        from config.constants import (
+            WINDOWS_MAX_FILENAME_LENGTH,
+            WINDOWS_MAX_PATH_LENGTH,
+            check_windows_path_length
+        )
+        MAX_FILENAME_LEN = WINDOWS_MAX_FILENAME_LENGTH
+        MAX_PATH_LEN = WINDOWS_MAX_PATH_LENGTH
+        has_path_check = True
+    except ImportError:
+        MAX_FILENAME_LEN = 255
+        MAX_PATH_LEN = 260
+        has_path_check = False
+    
     full_name = name + extension
-    if len(full_name) > 255:
-        return f"Ошибка: имя слишком длинное ({len(full_name)} > 255)"
+    if len(full_name) > MAX_FILENAME_LEN:
+        return f"Ошибка: имя слишком длинное ({len(full_name)} > {MAX_FILENAME_LEN})"
     
     # Проверка на точки в конце имени (Windows не позволяет)
     if name.endswith('.') or name.endswith(' '):
         return "Ошибка: имя не может заканчиваться точкой или пробелом"
+    
+    # Проверка длины полного пути для Windows
+    if sys.platform == 'win32' and path:
+        try:
+            directory = os.path.dirname(path)
+            full_path = os.path.join(directory, full_name)
+            if has_path_check:
+                if not check_windows_path_length(full_path):
+                    return f"Ошибка: полный путь слишком длинный (>{MAX_PATH_LEN} символов)"
+            elif len(full_path) > MAX_PATH_LEN and not full_path.startswith('\\\\?\\'):
+                return f"Ошибка: полный путь слишком длинный (>{MAX_PATH_LEN} символов)"
+        except (OSError, ValueError):
+            pass  # Игнорируем ошибки проверки пути
     
     return "Готов"
 

@@ -45,7 +45,6 @@ from core.file_operations import (
     validate_filename,
 )
 from core.metadata import MetadataExtractor
-from core.metadata_remover import MetadataRemover
 from core.file_converter import FileConverter
 from core.methods_manager import MethodsManager
 from core.rename_methods import (
@@ -152,7 +151,7 @@ class FileRenamerApp:
     
     Управляет всем жизненным циклом приложения, включая:
     - Создание и управление пользовательским интерфейсом
-    - Операции с файлами (переименование, удаление метаданных, конвертация)
+    - Операции с файлами (переименование, конвертация)
     - Управление настройками и шаблонами
     - Интеграция системы плагинов
     - Управление библиотеками и зависимостями
@@ -165,14 +164,16 @@ class FileRenamerApp:
         colors: Цветовая схема интерфейса
     """
     
-    def __init__(self, root, library_manager=None):
+    def __init__(self, root, library_manager=None, files_from_args=None):
         """Инициализация приложения.
         
         Args:
             root: Корневое окно Tkinter
             library_manager: Менеджер библиотек (опционально)
+            files_from_args: Список файлов из аргументов командной строки (опционально)
         """
         self.root = root
+        self.files_from_args = files_from_args or []
         
         # Устанавливаем версию программы из констант
         try:
@@ -256,14 +257,10 @@ class FileRenamerApp:
         # Инициализация модуля метаданных
         self.metadata_extractor = MetadataExtractor()
         
-        # Инициализация модуля удаления метаданных
-        self.metadata_remover = MetadataRemover()
-        
         # Инициализация модуля конвертации файлов
         self.file_converter = FileConverter()
         
         # Инициализация списков для новых вкладок
-        self.metadata_removal_files = []
         self.converter_files = []
         self.sorter_filters = []  # Список фильтров для сортировки
         
@@ -1065,13 +1062,21 @@ class FileRenamerApp:
         
         
         # === СОЗДАНИЕ ВКЛАДОК НА ГЛАВНОМ ЭКРАНЕ ===
-        # Создаем вкладки для метаданных, конвертации, настроек, о программе и поддержки
-        self._create_main_metadata_removal_tab()
+        # Создаем вкладки для конвертации, настроек, о программе и поддержки
         self._create_main_file_converter_tab()
         self._create_main_file_sorter_tab()
         self._create_main_settings_tab()
         self._create_main_about_tab()
         self._create_main_support_tab()
+        
+        # Обработка файлов из аргументов командной строки
+        if self.files_from_args:
+            # Увеличиваем задержку, чтобы все вкладки успели инициализироваться
+            self.root.after(1000, self._process_files_from_args)
+            # Логируем для отладки
+            self.log(f"Получено файлов из аргументов: {len(self.files_from_args)}")
+            for f in self.files_from_args[:5]:  # Показываем первые 5 файлов
+                self.log(f"  - {f}")
         
     
     def open_actions_window(self):
@@ -1848,7 +1853,6 @@ class FileRenamerApp:
         self.tabs_window_notebook = notebook
         
         # Создаем вкладки
-        self._create_log_tab(notebook)
         self._create_settings_tab(notebook)
         self._create_about_tab(notebook)
         self._create_support_tab(notebook)
@@ -1884,420 +1888,6 @@ class FileRenamerApp:
         """Переключение на вкладку поддержки в главном окне"""
         if hasattr(self, 'main_notebook') and self.main_notebook:
             self.main_notebook.select(5)  # Индекс 5 - вкладка поддержки
-    
-    def _create_main_log_tab(self):
-        """Создание вкладки лога операций на главном экране"""
-        log_tab = tk.Frame(self.main_notebook, bg=self.colors['bg_main'])
-        log_tab.columnconfigure(0, weight=1)
-        log_tab.rowconfigure(1, weight=1)
-        self.main_notebook.add(log_tab, text="Лог операций")
-        
-        # Панель управления логом
-        log_controls = tk.Frame(log_tab, bg=self.colors['bg_card'])
-        log_controls.grid(row=0, column=0, sticky="ew", padx=20, pady=(20, 10))
-        log_controls.columnconfigure(1, weight=1)
-        log_controls.columnconfigure(2, weight=1)
-        log_controls.columnconfigure(3, weight=1)
-        
-        # Заголовок
-        log_title = tk.Label(log_controls, text="Лог операций",
-                            font=('Robot', 11, 'bold'),
-                            bg=self.colors['bg_card'],
-                            fg=self.colors['text_primary'])
-        log_title.grid(row=0, column=0, padx=(0, 12), sticky="w")
-        
-        # Кнопка копирования лога
-        btn_copy_log = self.create_rounded_button(
-            log_controls, "Копировать", self.copy_log,
-            self.colors['info'], 'white',
-            font=('Robot', 9, 'bold'), padx=10, pady=6,
-            active_bg=self.colors['info_hover'])
-        btn_copy_log.grid(row=0, column=1, padx=3, sticky="ew")
-        
-        btn_clear_log = self.create_rounded_button(
-            log_controls, "Очистить лог", self.clear_log,
-            self.colors['danger'], 'white',
-            font=('Robot', 9, 'bold'), padx=10, pady=6,
-            active_bg=self.colors['danger_hover'])
-        btn_clear_log.grid(row=0, column=2, padx=3, sticky="ew")
-        
-        # Кнопка выгрузки лога
-        btn_save_log = self.create_rounded_button(
-            log_controls, "Выгрузить лог", self.save_log,
-            self.colors['primary'], 'white',
-            font=('Robot', 9, 'bold'), padx=10, pady=6,
-            active_bg=self.colors['primary_hover'])
-        btn_save_log.grid(row=0, column=3, padx=3, sticky="ew")
-        
-        # Лог операций
-        log_frame = tk.Frame(log_tab, bg=self.colors['bg_card'])
-        log_frame.grid(row=1, column=0, sticky="nsew", padx=20, pady=(0, 20))
-        log_frame.columnconfigure(0, weight=1)
-        log_frame.rowconfigure(0, weight=1)
-        
-        log_container = tk.Frame(log_frame, bg=self.colors['bg_card'], 
-                                relief='flat', borderwidth=1,
-                                highlightbackground=self.colors['border'],
-                                highlightthickness=1)
-        log_container.pack(fill=tk.BOTH, expand=True)
-        
-        log_scroll = ttk.Scrollbar(log_container, orient=tk.VERTICAL)
-        log_text_widget = tk.Text(log_container, yscrollcommand=log_scroll.set,
-                               font=('Consolas', 10),
-                               bg=self.colors['bg_card'], fg=self.colors['text_primary'],
-                               relief='flat', borderwidth=0,
-                               padx=12, pady=10,
-                               wrap=tk.WORD)
-        log_scroll.config(command=log_text_widget.yview)
-        
-        log_text_widget.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        log_scroll.pack(side=tk.RIGHT, fill=tk.Y)
-        
-        # Сохраняем ссылку на скроллбар
-        self.log_scrollbar = log_scroll
-        
-        # Привязка прокрутки колесом мыши для лога
-        self.bind_mousewheel(log_text_widget, log_text_widget)
-        
-        # Автоматическое управление видимостью скроллбара для Text
-        def update_log_scrollbar(*args):
-            self.update_scrollbar_visibility(log_text_widget, log_scroll, 'vertical')
-        
-        log_text_widget.bind('<Key>', lambda e: self.root.after_idle(update_log_scrollbar))
-        log_text_widget.bind('<Button-1>', lambda e: self.root.after_idle(update_log_scrollbar))
-        log_text_widget.bind('<Configure>', lambda e: self.root.after_idle(update_log_scrollbar))
-        
-        # Добавляем контекстное меню для копирования
-        log_context_menu = tk.Menu(log_text_widget, tearoff=0)
-        log_context_menu.add_command(label="Копировать", command=lambda: self._copy_selected_text(log_text_widget))
-        log_context_menu.add_command(label="Копировать всё", command=lambda: self._copy_all_text(log_text_widget))
-        log_context_menu.add_separator()
-        log_context_menu.add_command(label="Выделить всё", command=lambda: self._select_all_text(log_text_widget))
-        
-        def show_context_menu(event):
-            try:
-                log_context_menu.tk_popup(event.x_root, event.y_root)
-            finally:
-                log_context_menu.grab_release()
-        
-        log_text_widget.bind('<Button-3>', show_context_menu)  # Правый клик
-        log_text_widget.bind('<Control-c>', lambda e: self._copy_selected_text(log_text_widget))  # Ctrl+C
-        
-        # Сохраняем ссылку на log_text
-        self.logger.set_log_widget(log_text_widget)
-    
-    def _create_main_metadata_removal_tab(self):
-        """Создание вкладки удаления метаданных на главном экране"""
-        metadata_tab = tk.Frame(self.main_notebook, bg=self.colors['bg_main'])
-        metadata_tab.columnconfigure(0, weight=1)
-        metadata_tab.rowconfigure(0, weight=1)
-        self.main_notebook.add(metadata_tab, text="Удаление метаданных")
-        
-        # Основной контейнер (как во вкладке "Файлы")
-        main_container = tk.Frame(metadata_tab, bg=self.colors['bg_main'])
-        main_container.grid(row=0, column=0, sticky="nsew")
-        # Левая панель занимает 60%, правая - 40%
-        main_container.columnconfigure(0, weight=6, uniform="panels")
-        main_container.columnconfigure(1, weight=4, uniform="panels")
-        main_container.rowconfigure(0, weight=1)
-        
-        # Левая часть - список файлов (как во вкладке "Файлы")
-        files_count = len(self.metadata_removal_files) if hasattr(self, 'metadata_removal_files') else 0
-        left_panel = ttk.LabelFrame(
-            main_container,
-            text=f"Список файлов (Файлов: {files_count})",
-            style='Card.TLabelframe',
-            padding=6
-        )
-        left_panel.grid(row=0, column=0, sticky="nsew", padx=(0, 2))
-        left_panel.columnconfigure(0, weight=1)
-        left_panel.rowconfigure(1, weight=1)  # Строка с таблицей файлов
-        
-        # Сохраняем ссылку на left_panel для обновления заголовка
-        self.metadata_left_panel = left_panel
-        
-        # Кнопки управления под заголовком "Список файлов"
-        buttons_frame_left = tk.Frame(left_panel, bg=self.colors['bg_card'])
-        buttons_frame_left.pack(fill=tk.X, pady=(0, 6))
-        
-        btn_add_files_left = self.create_rounded_button(
-            buttons_frame_left, "Добавить файлы", self._add_files_for_metadata_removal,
-            self.colors['primary'], 'white', 
-            font=('Robot', 9, 'bold'), padx=10, pady=6,
-            active_bg=self.colors['primary_hover'])
-        btn_add_files_left.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 4))
-        
-        btn_clear_left = self.create_rounded_button(
-            buttons_frame_left, "Очистить", self._clear_metadata_files_list,
-            self.colors['warning'], 'white',
-            font=('Robot', 9, 'bold'), padx=10, pady=6,
-            active_bg=self.colors['warning_hover'])
-        btn_clear_left.pack(side=tk.LEFT, fill=tk.X, expand=True)
-        
-        # Таблица файлов
-        list_frame = ttk.Frame(left_panel)
-        list_frame.pack(fill=tk.BOTH, expand=True)
-        
-        # Создание таблицы с прокруткой
-        scrollbar_y = ttk.Scrollbar(list_frame, orient=tk.VERTICAL)
-        scrollbar_x = ttk.Scrollbar(list_frame, orient=tk.HORIZONTAL)
-        
-        columns = ('file', 'status')
-        tree = ttk.Treeview(
-            list_frame,
-            columns=columns,
-            show="headings",
-            yscrollcommand=scrollbar_y.set,
-            xscrollcommand=scrollbar_x.set,
-            style='Custom.Treeview'
-        )
-        
-        scrollbar_y.config(command=tree.yview)
-        scrollbar_x.config(command=tree.xview)
-        
-        # Настройка колонок
-        tree.heading("file", text="Файл")
-        tree.heading("status", text="Статус")
-        
-        tree.column("file", width=400, anchor='w', minwidth=200)
-        tree.column("status", width=200, anchor='w', minwidth=100)
-        
-        # Размещение таблицы и скроллбаров
-        tree.grid(row=0, column=0, sticky="nsew")
-        scrollbar_y.grid(row=0, column=1, sticky="ns")
-        scrollbar_x.grid(row=1, column=0, sticky="ew")
-        
-        list_frame.columnconfigure(0, weight=1)
-        list_frame.rowconfigure(0, weight=1)
-        
-        # Сохраняем ссылку на tree
-        self.metadata_removal_tree = tree
-        self.metadata_removal_files = []
-        
-        # Привязка прокрутки колесом мыши
-        self.bind_mousewheel(tree, tree)
-        
-        # Прогресс-бар внизу
-        progress_container = tk.Frame(left_panel, bg=self.colors['bg_card'])
-        progress_container.pack(fill=tk.X, pady=(6, 0))
-        progress_container.columnconfigure(1, weight=1)
-        
-        # Название прогресс-бара и прогресс-бар на одной строке
-        progress_title = tk.Label(progress_container, text="Прогресс:",
-                                 font=('Robot', 9, 'bold'),
-                                 bg=self.colors['bg_card'],
-                                 fg=self.colors['text_primary'],
-                                 anchor='w')
-        progress_title.grid(row=0, column=0, padx=(0, 10), sticky="w")
-        
-        self.metadata_progress_bar = ttk.Progressbar(progress_container, mode='determinate')
-        self.metadata_progress_bar.grid(row=0, column=1, sticky="ew", padx=(0, 10))
-        self.metadata_progress_bar['value'] = 0
-        
-        self.metadata_progress_label = tk.Label(progress_container, text="",
-                                                font=('Robot', 8),
-                                                bg=self.colors['bg_card'],
-                                                fg=self.colors['text_secondary'],
-                                                anchor='w')
-        self.metadata_progress_label.grid(row=1, column=0, columnspan=2, sticky="w", pady=(4, 0))
-        
-        # Настройка drag and drop для вкладки удаления метаданных
-        self._setup_metadata_removal_drag_drop(list_frame, tree, metadata_tab)
-        
-        # === ПРАВАЯ ПАНЕЛЬ (опции удаления) ===
-        right_panel = ttk.LabelFrame(main_container, text="Что удалять?", 
-                                     style='Card.TLabelframe', padding=6)
-        right_panel.grid(row=0, column=1, sticky="nsew", padx=(2, 0))
-        right_panel.columnconfigure(0, weight=1)
-        right_panel.rowconfigure(0, weight=1)  # Опции теперь в строке 0
-        
-        # Внутренний Frame для содержимого
-        options_frame = tk.Frame(right_panel, bg=self.colors['bg_card'])
-        options_frame.pack(fill=tk.BOTH, expand=True, padx=6, pady=6)
-        
-        # Словарь для хранения переменных чекбоксов метаданных
-        self.metadata_checkboxes = {}
-        self.metadata_checkbox_vars = {}
-        
-        # Canvas для прокрутки опций
-        options_canvas = tk.Canvas(options_frame, bg=self.colors['bg_card'], 
-                                   highlightthickness=0)
-        options_scrollbar = ttk.Scrollbar(options_frame, orient="vertical", 
-                                          command=options_canvas.yview)
-        options_scrollable = tk.Frame(options_canvas, bg=self.colors['bg_card'])
-        
-        options_scrollable.bind(
-            "<Configure>",
-            lambda e: options_canvas.configure(scrollregion=options_canvas.bbox("all"))
-        )
-        
-        options_canvas_window = options_canvas.create_window((0, 0), window=options_scrollable, anchor="nw")
-        
-        def on_options_canvas_configure(event):
-            if event.widget == options_canvas:
-                canvas_width = event.width
-                options_canvas.itemconfig(options_canvas_window, width=canvas_width)
-                # Обновляем scrollregion и видимость скроллбара
-                options_canvas.update_idletasks()
-                bbox = options_canvas.bbox("all")
-                if bbox:
-                    options_canvas.configure(scrollregion=bbox)
-                # Проверяем видимость скроллбара после изменения размера
-                self.root.after(10, update_scrollbar_visibility)
-        
-        options_canvas.bind('<Configure>', on_options_canvas_configure)
-        
-        # Флаг для отслеживания, нужна ли прокрутка
-        _needs_scrolling = True
-        
-        def update_scrollbar_visibility():
-            """Обновление видимости скроллбара в зависимости от размера содержимого"""
-            nonlocal _needs_scrolling
-            try:
-                options_canvas.update_idletasks()
-                bbox = options_canvas.bbox("all")
-                if bbox:
-                    canvas_height = options_canvas.winfo_height()
-                    if canvas_height > 1:
-                        # Высота содержимого
-                        content_height = bbox[3] - bbox[1]
-                        # Если содержимое помещается (с небольшим запасом), скрываем скроллбар
-                        if content_height <= canvas_height + 2:  # Небольшой запас для погрешности
-                            # Устанавливаем scrollregion равным видимой области, чтобы запретить прокрутку
-                            options_canvas.configure(scrollregion=(0, 0, bbox[2], canvas_height))
-                            # Сбрасываем позицию прокрутки в начало
-                            options_canvas.yview_moveto(0)
-                            _needs_scrolling = False
-                            # Скрываем скроллбар
-                            try:
-                                if options_scrollbar.winfo_viewable():
-                                    options_scrollbar.pack_forget()
-                            except (tk.TclError, AttributeError):
-                                pass
-                        else:
-                            # Обновляем scrollregion для прокрутки
-                            options_canvas.configure(scrollregion=bbox)
-                            _needs_scrolling = True
-                            # Показываем скроллбар, если он был скрыт
-                            try:
-                                if not options_scrollbar.winfo_viewable():
-                                    options_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-                            except (tk.TclError, AttributeError):
-                                # Если pack не сработал, пробуем grid
-                                try:
-                                    options_scrollbar.grid(row=0, column=1, sticky="ns")
-                                except (tk.TclError, AttributeError):
-                                    pass
-            except (tk.TclError, AttributeError):
-                pass
-        
-        def on_scroll(*args):
-            options_scrollbar.set(*args)
-            # Обновляем видимость скроллбара после прокрутки
-            self.root.after(10, update_scrollbar_visibility)
-        
-        options_canvas.configure(yscrollcommand=on_scroll)
-        
-        # Используем grid для правильного размещения с автоматическим скроллбаром
-        options_frame.columnconfigure(0, weight=1)
-        options_frame.rowconfigure(0, weight=1)
-        options_canvas.grid(row=0, column=0, sticky="nsew")
-        options_scrollbar.grid(row=0, column=1, sticky="ns")
-        
-        # Кастомная функция прокрутки с проверкой необходимости
-        def on_mousewheel(event):
-            """Обработчик прокрутки с проверкой необходимости"""
-            if not _needs_scrolling:
-                return  # Не прокручиваем, если содержимое помещается
-            scroll_amount = int(-1 * (event.delta / 120))
-            options_canvas.yview_scroll(scroll_amount, "units")
-        
-        def on_mousewheel_linux(event):
-            """Обработчик прокрутки для Linux"""
-            if not _needs_scrolling:
-                return  # Не прокручиваем, если содержимое помещается
-            if event.num == 4:
-                options_canvas.yview_scroll(-1, "units")
-            elif event.num == 5:
-                options_canvas.yview_scroll(1, "units")
-        
-        # Привязка прокрутки колесом мыши с проверкой
-        options_canvas.bind("<MouseWheel>", on_mousewheel)
-        options_canvas.bind("<Button-4>", on_mousewheel_linux)
-        options_canvas.bind("<Button-5>", on_mousewheel_linux)
-        
-        # Привязка к дочерним виджетам
-        def bind_to_children(parent):
-            """Рекурсивная привязка прокрутки к дочерним виджетам."""
-            for child in parent.winfo_children():
-                try:
-                    child.bind("<MouseWheel>", on_mousewheel)
-                    child.bind("<Button-4>", on_mousewheel_linux)
-                    child.bind("<Button-5>", on_mousewheel_linux)
-                    bind_to_children(child)
-                except (AttributeError, tk.TclError):
-                    pass
-        
-        bind_to_children(options_scrollable)
-        
-        # Фрейм для чекбоксов метаданных (будет обновляться динамически)
-        self.metadata_checkboxes_frame = options_scrollable
-        
-        # Маппинг полей метаданных на русские названия
-        self.metadata_field_names = {
-            'exif': 'EXIF данные',
-            'tags': 'Аудио теги',
-            'author': 'Автор',
-            'title': 'Название',
-            'subject': 'Тема',
-            'description': 'Описание',
-            'comments': 'Комментарии',
-            'keywords': 'Ключевые слова',
-            'category': 'Категория',
-            'revision': 'Ревизия',
-            'last_modified': 'Последний измененный',
-            'created': 'Дата создания',
-            'modified': 'Дата изменения',
-            'language': 'Язык',
-            'identifier': 'Идентификатор',
-            'content_status': 'Статус содержимого',
-            'version': 'Версия',
-            'all': 'Все метаданные'
-        }
-        
-        # Обновляем чекбоксы при выборе файлов
-        self.metadata_removal_tree.bind('<<TreeviewSelect>>', lambda e: self._update_metadata_checkboxes())
-        
-        # Инициализируем чекбоксы (показываем все доступные)
-        self._update_metadata_checkboxes()
-        
-        # Обновляем scrollregion после создания всех элементов и при обновлении чекбоксов
-        def finalize_scroll():
-            options_canvas.update_idletasks()
-            bbox = options_canvas.bbox("all")
-            if bbox:
-                options_canvas.configure(scrollregion=bbox)
-                # Проверяем видимость скроллбара после небольшой задержки
-                self.root.after(50, update_scrollbar_visibility)
-        
-        # Сохраняем ссылку на функцию для вызова при обновлении чекбоксов
-        self._finalize_metadata_scroll = finalize_scroll
-        self.root.after(100, finalize_scroll)
-        
-        # Разделитель перед кнопками
-        separator_buttons = tk.Frame(right_panel, height=2, bg=self.colors['border'])
-        separator_buttons.pack(fill=tk.X, padx=6, pady=(6, 0))
-        
-        # Кнопки управления в правой панели (внизу)
-        buttons_frame = tk.Frame(right_panel, bg=self.colors['bg_card'])
-        buttons_frame.pack(fill=tk.X, padx=6, pady=(6, 0))
-        
-        btn_remove_selected = self.create_rounded_button(
-            buttons_frame, "Удалить метаданные", self._remove_selected_metadata_files,
-            self.colors['danger'], 'white',
-            font=('Robot', 9, 'bold'), padx=10, pady=6,
-            active_bg=self.colors['danger_hover'])
-        btn_remove_selected.pack(fill=tk.X)
     
     def _create_main_file_converter_tab(self):
         """Создание вкладки конвертации файлов на главном экране"""
@@ -2671,91 +2261,6 @@ class FileRenamerApp:
             
             return content_frame
         
-        # Секция: Лог операций
-        log_frame = create_collapsible_frame(content_frame, "Лог операций", default_expanded=True)
-        
-        # Панель управления логом
-        log_controls = tk.Frame(log_frame, bg=self.colors['bg_card'])
-        log_controls.pack(fill=tk.X, pady=(0, 10))
-        log_controls.columnconfigure(0, weight=1, uniform="log_buttons")
-        log_controls.columnconfigure(1, weight=1, uniform="log_buttons")
-        log_controls.columnconfigure(2, weight=1, uniform="log_buttons")
-        
-        # Кнопка копирования лога
-        btn_copy_log = self.create_rounded_button(
-            log_controls, "Копировать", self.copy_log,
-            self.colors['info'], 'white',
-            font=('Robot', 9, 'bold'), padx=10, pady=6,
-            active_bg=self.colors['info_hover'], expand=True)
-        btn_copy_log.grid(row=0, column=0, sticky="ew", padx=(0, 5))
-        
-        btn_clear_log = self.create_rounded_button(
-            log_controls, "Очистить лог", self.clear_log,
-            self.colors['danger'], 'white',
-            font=('Robot', 9, 'bold'), padx=10, pady=6,
-            active_bg=self.colors['danger_hover'], expand=True)
-        btn_clear_log.grid(row=0, column=1, sticky="ew", padx=(0, 5))
-        
-        # Кнопка выгрузки лога
-        btn_save_log = self.create_rounded_button(
-            log_controls, "Выгрузить лог", self.save_log,
-            self.colors['primary'], 'white',
-            font=('Robot', 9, 'bold'), padx=10, pady=6,
-            active_bg=self.colors['primary_hover'], expand=True)
-        btn_save_log.grid(row=0, column=2, sticky="ew")
-        
-        # Лог операций
-        log_container_frame = tk.Frame(log_frame, bg=self.colors['bg_card'], 
-                                relief='flat', borderwidth=1,
-                                highlightbackground=self.colors['border'],
-                                highlightthickness=1)
-        log_container_frame.pack(fill=tk.BOTH, expand=True)
-        
-        log_scroll = ttk.Scrollbar(log_container_frame, orient=tk.VERTICAL)
-        log_text_widget = tk.Text(log_container_frame, yscrollcommand=log_scroll.set,
-                               font=('Consolas', 10),
-                               bg=self.colors['bg_card'], fg=self.colors['text_primary'],
-                               relief='flat', borderwidth=0,
-                               padx=12, pady=10,
-                               wrap=tk.WORD)
-        log_scroll.config(command=log_text_widget.yview)
-        
-        log_text_widget.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        log_scroll.pack(side=tk.RIGHT, fill=tk.Y)
-        
-        # Сохраняем ссылку на скроллбар
-        self.log_scrollbar = log_scroll
-        
-        # Привязка прокрутки колесом мыши для лога
-        self.bind_mousewheel(log_text_widget, log_text_widget)
-        
-        # Автоматическое управление видимостью скроллбара для Text
-        def update_log_scrollbar(*args):
-            self.update_scrollbar_visibility(log_text_widget, log_scroll, 'vertical')
-        
-        log_text_widget.bind('<Key>', lambda e: self.root.after_idle(update_log_scrollbar))
-        log_text_widget.bind('<Button-1>', lambda e: self.root.after_idle(update_log_scrollbar))
-        log_text_widget.bind('<Configure>', lambda e: self.root.after_idle(update_log_scrollbar))
-        
-        # Добавляем контекстное меню для копирования
-        log_context_menu = tk.Menu(log_text_widget, tearoff=0)
-        log_context_menu.add_command(label="Копировать", command=lambda: self._copy_selected_text(log_text_widget))
-        log_context_menu.add_command(label="Копировать всё", command=lambda: self._copy_all_text(log_text_widget))
-        log_context_menu.add_separator()
-        log_context_menu.add_command(label="Выделить всё", command=lambda: self._select_all_text(log_text_widget))
-        
-        def show_context_menu(event):
-            try:
-                log_context_menu.tk_popup(event.x_root, event.y_root)
-            finally:
-                log_context_menu.grab_release()
-        
-        log_text_widget.bind('<Button-3>', show_context_menu)  # Правый клик
-        log_text_widget.bind('<Control-c>', lambda e: self._copy_selected_text(log_text_widget))  # Ctrl+C
-        
-        # Сохраняем ссылку на log_text
-        self.logger.set_log_widget(log_text_widget)
-        
         # Секция: Управление библиотеками
         # Копируем логику из существующего метода
         if hasattr(self, 'library_manager') and self.library_manager:
@@ -2995,6 +2500,124 @@ class FileRenamerApp:
                 'white', font=('Robot', 9), padx=15, pady=8,
                 active_bg=self.colors['primary_hover'])
             check_all_btn.pack(side=tk.LEFT, padx=(10, 0))
+        
+        # Секция: Контекстное меню Windows
+        if sys.platform == 'win32':
+            context_menu_frame = create_collapsible_frame(content_frame, "Контекстное меню Windows", default_expanded=True)
+            
+            context_menu_info_label = tk.Label(context_menu_frame,
+                                             text="Добавление пункта 'Добавить в конвертер Ренейм+' в контекстное меню Windows. "
+                                                  "Позволяет быстро добавлять файлы в конвертер прямо из Проводника.",
+                                             font=('Robot', 9),
+                                             bg=self.colors['bg_card'],
+                                             fg=self.colors['text_secondary'],
+                                             wraplength=600,
+                                             justify=tk.LEFT)
+            context_menu_info_label.pack(anchor=tk.W, pady=(0, 15))
+            
+            # Импортируем менеджер контекстного меню
+            try:
+                from utils.context_menu import ContextMenuManager
+                context_menu_manager = ContextMenuManager()
+                
+                # Фрейм для статуса и кнопок
+                context_menu_controls = tk.Frame(context_menu_frame, bg=self.colors['bg_card'])
+                context_menu_controls.pack(fill=tk.X, pady=(0, 10))
+                
+                # Статус установки
+                status_label = tk.Label(context_menu_controls,
+                                       text="Статус: Проверка...",
+                                       font=('Robot', 9),
+                                       bg=self.colors['bg_card'],
+                                       fg=self.colors['text_primary'])
+                status_label.pack(side=tk.LEFT, padx=(0, 15))
+                
+                # Кнопка установки
+                def install_context_menu():
+                    """Установка контекстного меню"""
+                    success, message = context_menu_manager.install()
+                    if success:
+                        messagebox.showinfo("Успех", message)
+                    else:
+                        messagebox.showerror("Ошибка", message)
+                    update_context_menu_status()
+                
+                install_btn = self.create_rounded_button(
+                    context_menu_controls, "Установить", install_context_menu,
+                    self.colors['primary'], 'white',
+                    font=('Robot', 9), padx=15, pady=8,
+                    active_bg=self.colors['primary_hover'])
+                install_btn.pack(side=tk.LEFT, padx=(0, 10))
+                
+                # Кнопка удаления
+                def uninstall_context_menu():
+                    """Удаление контекстного меню"""
+                    success, message = context_menu_manager.uninstall()
+                    if success:
+                        messagebox.showinfo("Успех", message)
+                    else:
+                        messagebox.showerror("Ошибка", message)
+                    update_context_menu_status()
+                
+                uninstall_btn = self.create_rounded_button(
+                    context_menu_controls, "Удалить", uninstall_context_menu,
+                    self.colors['danger'], 'white',
+                    font=('Robot', 9), padx=15, pady=8,
+                    active_bg=self.colors['danger_hover'])
+                uninstall_btn.pack(side=tk.LEFT)
+                
+                def update_context_menu_status():
+                    """Обновление статуса контекстного меню"""
+                    if context_menu_manager.is_installed():
+                        status_label.config(text="Статус: ✓ Установлено", fg='green')
+                        # Для rounded_button изменяем команду и визуальный вид
+                        try:
+                            # Получаем canvas из фрейма кнопки
+                            install_canvas = install_btn.winfo_children()[0] if install_btn.winfo_children() else None
+                            uninstall_canvas = uninstall_btn.winfo_children()[0] if uninstall_btn.winfo_children() else None
+                            
+                            # Делаем кнопку установки неактивной
+                            if install_canvas:
+                                install_canvas.btn_command = lambda: None  # Пустая команда
+                                install_canvas.config(cursor='arrow')
+                            
+                            # Делаем кнопку удаления активной
+                            if uninstall_canvas:
+                                uninstall_canvas.btn_command = uninstall_context_menu
+                                uninstall_canvas.config(cursor='hand2')
+                        except Exception:
+                            pass
+                    else:
+                        status_label.config(text="Статус: ✗ Не установлено", fg='gray')
+                        # Обратное состояние
+                        try:
+                            install_canvas = install_btn.winfo_children()[0] if install_btn.winfo_children() else None
+                            uninstall_canvas = uninstall_btn.winfo_children()[0] if uninstall_btn.winfo_children() else None
+                            
+                            # Делаем кнопку установки активной
+                            if install_canvas:
+                                install_canvas.btn_command = install_context_menu
+                                install_canvas.config(cursor='hand2')
+                            
+                            # Делаем кнопку удаления неактивной
+                            if uninstall_canvas:
+                                uninstall_canvas.btn_command = lambda: None  # Пустая команда
+                                uninstall_canvas.config(cursor='arrow')
+                        except Exception:
+                            pass
+                
+                # Обновляем статус при создании
+                update_context_menu_status()
+                
+            except ImportError as e:
+                error_label = tk.Label(context_menu_frame,
+                                      text=f"Не удалось загрузить модуль контекстного меню: {e}",
+                                      font=('Robot', 9),
+                                      bg=self.colors['bg_card'],
+                                      fg='red',
+                                      wraplength=600,
+                                      justify=tk.LEFT)
+                error_label.pack(anchor=tk.W, pady=(0, 15))
         
     
     def _create_main_about_tab(self):
@@ -3443,489 +3066,87 @@ class FileRenamerApp:
         donation_label.pack(anchor=tk.W, pady=(8, 0))
         donation_label.bind("<Button-1>", open_donation)
     
-    def _add_files_for_metadata_removal(self):
-        """Добавление файлов для удаления метаданных"""
-        files = filedialog.askopenfilenames(
-            title="Выберите файлы для удаления метаданных",
-            filetypes=[
-                ("Все файлы", "*.*"),
-                ("Изображения", "*.jpg *.jpeg *.png *.gif *.bmp *.webp *.tiff *.tif *.ico *.svg *.heic *.heif *.avif *.dng *.cr2 *.nef *.raw"),
-                ("Аудио", "*.mp3 *.wav *.flac *.aac *.ogg *.m4a *.wma *.opus"),
-                ("Видео", "*.mp4 *.avi *.mkv *.mov *.wmv *.flv *.webm *.m4v *.mpg *.mpeg *.3gp"),
-                ("Документы", "*.pdf *.docx *.doc *.xlsx *.xls *.pptx *.ppt *.txt *.rtf *.csv *.html *.htm *.odt *.ods *.odp"),
-            ]
-        )
-        if files:
-            for file_path in files:
-                if not hasattr(self, 'metadata_removal_files'):
-                    self.metadata_removal_files = []
-                # Проверяем, что файл еще не добавлен
-                normalized_path = os.path.normpath(os.path.abspath(file_path))
-                if any(os.path.normpath(os.path.abspath(f.get('path', ''))) == normalized_path 
-                       for f in self.metadata_removal_files):
-                    continue
-                
-                file_data = {
-                    'path': file_path,
-                    'status': 'Готов'
-                }
-                self.metadata_removal_files.append(file_data)
-                
-                # Добавляем в treeview
-                file_name = os.path.basename(file_path)
-                can_remove = self.metadata_remover.can_remove_metadata(file_path)
-                status = 'Готов' if can_remove else 'Формат не поддерживается'
-                self.metadata_removal_tree.insert("", tk.END, values=(file_name, status))
-            
-            # Обновляем заголовок панели
-            if hasattr(self, 'metadata_left_panel'):
-                count = len(self.metadata_removal_files)
-                self.metadata_left_panel.config(text=f"Список файлов (Файлов: {count})")
-            # Обновляем чекбоксы метаданных
-            self._update_metadata_checkboxes()
-            self.log(f"Добавлено файлов для удаления метаданных: {len(files)}")
-    
-    def _update_metadata_checkboxes(self):
-        """Обновление чекбоксов метаданных на основе выбранных файлов"""
-        if not hasattr(self, 'metadata_checkboxes_frame'):
+    def _process_files_from_args(self):
+        """Обработка файлов из аргументов командной строки"""
+        if not self.files_from_args:
+            self.log("Нет файлов для обработки из аргументов")
             return
         
-        # Удаляем старые чекбоксы (кроме галочки "Удалить все")
-        widgets_to_remove = []
-        for widget in self.metadata_checkboxes_frame.winfo_children():
-            if isinstance(widget, tk.Checkbutton):
-                # Сохраняем галочку "Удалить все метаданные" если она есть
-                try:
-                    if widget.cget('text') == "Удалить все метаданные":
-                        continue
-                except:
-                    pass
-                widgets_to_remove.append(widget)
-            elif isinstance(widget, ttk.Separator):
-                widgets_to_remove.append(widget)
+        self.log(f"Начинаем обработку {len(self.files_from_args)} файлов из контекстного меню")
         
-        for widget in widgets_to_remove:
-            widget.destroy()
-        
-        # Очищаем словари (но сохраняем переменную для "Удалить все")
-        self.metadata_checkboxes = {}
-        self.metadata_checkbox_vars = {}
-        
-        # Получаем выбранные файлы или все файлы
-        selected_items = self.metadata_removal_tree.selection()
-        if selected_items:
-            indices = [self.metadata_removal_tree.index(item) for item in selected_items]
-            files_to_check = [self.metadata_removal_files[i] for i in indices if 0 <= i < len(self.metadata_removal_files)]
+        # Переключаемся на вкладку конвертации
+        if hasattr(self, 'main_notebook') and self.main_notebook:
+            # Находим индекс вкладки "Конвертация файлов"
+            tab_found = False
+            for i in range(self.main_notebook.index('end')):
+                tab_text = self.main_notebook.tab(i, 'text')
+                if tab_text == 'Конвертация файлов':
+                    self.main_notebook.select(i)
+                    tab_found = True
+                    self.log("Переключились на вкладку 'Конвертация файлов'")
+                    break
+            
+            if not tab_found:
+                self.log("Вкладка 'Конвертация файлов' не найдена!")
+                # Пробуем найти по другому названию или создаем заново
+                for i in range(self.main_notebook.index('end')):
+                    tab_text = self.main_notebook.tab(i, 'text')
+                    self.log(f"Найдена вкладка: {tab_text}")
         else:
-            files_to_check = self.metadata_removal_files
+            self.log("main_notebook не найден!")
         
-        if not files_to_check:
-            # Если нет файлов, показываем все возможные метаданные
-            all_fields = ['author', 'title', 'subject', 'description', 'comments', 'keywords', 
-                          'category', 'revision', 'last_modified', 'created', 'modified',
-                          'language', 'identifier', 'content_status', 'version', 'exif', 'tags']
-        else:
-            # Находим общие доступные метаданные для всех выбранных файлов
-            common_fields = None
-            for file_data in files_to_check:
-                file_path = file_data.get('path')
-                if file_path:
-                    available_fields = self.metadata_remover.get_available_metadata_fields(file_path)
-                    if common_fields is None:
-                        common_fields = set(available_fields)
-                    else:
-                        common_fields = common_fields.intersection(set(available_fields))
+        # Добавляем файлы
+        for file_path in self.files_from_args:
+            if not os.path.exists(file_path) or not os.path.isfile(file_path):
+                continue
             
-            all_fields = sorted(list(common_fields)) if common_fields else []
-        
-        # Инициализируем переменную для "Удалить все метаданные" если еще нет
-        if not hasattr(self, 'metadata_remove_all_var'):
-            self.metadata_remove_all_var = tk.BooleanVar(value=False)
-        
-        # Проверяем, есть ли уже галочка "Удалить все"
-        remove_all_exists = False
-        for widget in self.metadata_checkboxes_frame.winfo_children():
-            if isinstance(widget, tk.Checkbutton):
-                try:
-                    if widget.cget('text') == "Удалить все метаданные":
-                        remove_all_exists = True
-                        break
-                except:
-                    pass
-        
-        # Создаем чекбоксы для доступных метаданных (сначала обычные чекбоксы)
-        for field in all_fields:
-            var = tk.BooleanVar(value=True)
-            self.metadata_checkbox_vars[field] = var
-            field_name = self.metadata_field_names.get(field, field)
-            checkbox = tk.Checkbutton(
-                self.metadata_checkboxes_frame,
-                text=field_name,
-                variable=var,
-                bg=self.colors['bg_card'],
-                fg=self.colors['text_primary'],
-                font=('Robot', 9),
-                anchor='w'
-            )
-            checkbox.pack(anchor=tk.W, pady=2, padx=5)
-            self.metadata_checkboxes[field] = checkbox
-        
-        # В конце списка создаем чекбокс "Удалить все метаданные" (только если его еще нет)
-        if not remove_all_exists:
-            # Разделитель перед "Удалить все"
-            separator = ttk.Separator(self.metadata_checkboxes_frame, orient='horizontal')
-            separator.pack(fill=tk.X, pady=(10, 10))
+            if not hasattr(self, 'converter_files'):
+                self.converter_files = []
             
-            def on_remove_all_toggle():
-                """Обработчик изменения галочки 'Удалить все метаданные'"""
-                if self.metadata_remove_all_var.get():
-                    # Если галочка установлена, удаляем все метаданные
-                    self._remove_all_metadata_files_auto()
+            # Проверяем, что файл еще не добавлен
+            normalized_path = os.path.normpath(os.path.abspath(file_path))
+            if any(os.path.normpath(os.path.abspath(f.get('path', ''))) == normalized_path 
+                   for f in self.converter_files):
+                continue
             
-            remove_all_checkbox = tk.Checkbutton(
-                self.metadata_checkboxes_frame,
-                text="Удалить все метаданные",
-                variable=self.metadata_remove_all_var,
-                command=on_remove_all_toggle,
-                bg=self.colors['bg_card'],
-                fg=self.colors['primary'],
-                font=('Robot', 10, 'bold'),
-                selectcolor=self.colors['bg_card'],
-                activebackground=self.colors['bg_card'],
-                activeforeground=self.colors['primary']
-            )
-            remove_all_checkbox.pack(anchor=tk.W, pady=(0, 10))
-        
-        # Обновляем scrollregion и видимость скроллбара
-        def update_after_checkboxes():
-            self.metadata_checkboxes_frame.master.update_idletasks()
-            if hasattr(self, '_finalize_metadata_scroll'):
-                self._finalize_metadata_scroll()
-        
-        self.root.after(50, update_after_checkboxes)
-    
-    def _remove_selected_metadata_files(self):
-        """Удаление метаданных из выбранных файлов"""
-        # Защита от повторных вызовов
-        if hasattr(self, '_removing_metadata') and self._removing_metadata:
-            return
-        
-        if not hasattr(self, 'metadata_removal_files') or not self.metadata_removal_files:
-            messagebox.showwarning("Предупреждение", "Список файлов пуст")
-            return
-        
-        selected_items = self.metadata_removal_tree.selection()
-        if not selected_items:
-            # Если ничего не выбрано, обрабатываем все файлы
-            selected_items = self.metadata_removal_tree.get_children()
-            if not selected_items:
-                messagebox.showwarning("Предупреждение", "Нет файлов для обработки")
-                return
-        
-        # Получаем выбранные опции удаления из чекбоксов
-        remove_options = {}
-        for field, var in self.metadata_checkbox_vars.items():
-            remove_options[field] = var.get()
-        
-        # Если ничего не выбрано, удаляем все
-        if not any(remove_options.values()):
-            remove_options = {k: True for k in remove_options.keys()}
-        
-        # Устанавливаем флаг обработки
-        self._removing_metadata = True
-        
-        # Инициализируем прогресс-бар
-        total_files = len(selected_items)
-        self.root.after(0, lambda: self.metadata_progress_bar.config(maximum=total_files, value=0))
-        self.root.after(0, lambda: self.metadata_progress_label.config(text=f"Обработка файлов: 0 / {total_files}"))
-        
-        # Обрабатываем файлы в отдельном потоке
-        def process_files():
-            success_count = 0
-            error_count = 0
-            processed = 0
+            ext = os.path.splitext(file_path)[1].lower()
             
-            for item in selected_items:
-                index = self.metadata_removal_tree.index(item)
-                if 0 <= index < len(self.metadata_removal_files):
-                    file_data = self.metadata_removal_files[index]
-                    file_path = file_data['path']
-                    
-                    # Обновляем прогресс
-                    processed += 1
-                    file_name = os.path.basename(file_path)
-                    self.root.after(0, lambda p=processed, t=total_files, fn=file_name: 
-                                   self._update_metadata_progress(p, t, fn))
-                    
-                    success, message = self.metadata_remover.remove_metadata(
-                        file_path, 
-                        create_backup=True,
-                        remove_options=remove_options
-                    )
-                    
-                    # Обновляем статус в UI (используем значения по умолчанию для правильного захвата)
-                    self.root.after(0, lambda idx=index, s=success, m=message: 
-                                   self._update_metadata_removal_status(idx, s, m))
-                    
-                    if success:
-                        success_count += 1
-                        self.log(f"Метаданные удалены: {file_name}")
-                    else:
-                        error_count += 1
-                        self.log(f"Ошибка при удалении метаданных из {file_name}: {message}")
+            # Определяем доступные форматы конвертации
+            available_formats = []
+            all_formats = self.file_converter.get_supported_formats()
+            for target_format in all_formats:
+                if self.file_converter.can_convert(file_path, target_format):
+                    available_formats.append(target_format)
             
-            # Сбрасываем прогресс-бар
-            self.root.after(0, lambda: self.metadata_progress_bar.config(value=0))
-            self.root.after(0, lambda: self.metadata_progress_label.config(text=""))
+            # Определяем категорию файла
+            file_category = self.file_converter.get_file_type_category(file_path)
             
-            # Показываем результат только один раз (используем значения по умолчанию)
-            if success_count + error_count > 0:
-                # Очищаем список файлов после успешного удаления
-                def show_result_and_clear():
-                    # Проверяем, не было ли уже показано сообщение
-                    if not hasattr(self, '_metadata_result_shown'):
-                        self._metadata_result_shown = True
-                        messagebox.showinfo(
-                            "Результат",
-                            f"Обработано файлов: {success_count + error_count}\n"
-                            f"Успешно: {success_count}\n"
-                            f"Ошибок: {error_count}"
-                        )
-                        # Очищаем список после показа результата
-                        if hasattr(self, 'metadata_removal_tree'):
-                            self.metadata_removal_tree.delete(*self.metadata_removal_tree.get_children())
-                            self.metadata_removal_files = []
-                            # Обновляем заголовок панели
-                            if hasattr(self, 'metadata_left_panel'):
-                                self.metadata_left_panel.config(text=f"Список файлов (Файлов: 0)")
-                        # Сбрасываем флаг обработки
-                        self._removing_metadata = False
-                        # Сбрасываем флаг показа сообщения
-                        self.root.after(100, lambda: setattr(self, '_metadata_result_shown', False))
-                
-                self.root.after(0, show_result_and_clear)
-        
-        thread = threading.Thread(target=process_files, daemon=True)
-        thread.start()
-    
-    def _update_metadata_progress(self, current: int, total: int, filename: str):
-        """Обновление прогресс-бара удаления метаданных"""
-        try:
-            self.metadata_progress_bar['value'] = current
-            self.metadata_progress_label.config(text=f"Обработка: {current} / {total} - {filename[:50]}")
-        except Exception:
-            pass
-    
-    def _update_metadata_removal_status(self, index: int, success: bool, message: str):
-        """Обновление статуса файла в списке удаления метаданных"""
-        if not hasattr(self, 'metadata_removal_tree'):
-            return
-        
-        items = self.metadata_removal_tree.get_children()
-        if 0 <= index < len(items):
-            item = items[index]
-            status = "Успешно" if success else f"Ошибка: {message[:30]}"
-            current_values = self.metadata_removal_tree.item(item, 'values')
-            self.metadata_removal_tree.item(item, values=(current_values[0], status))
-    
-    def _remove_all_metadata_files_auto(self):
-        """Автоматическое удаление всех метаданных при установке галочки"""
-        # Защита от повторных вызовов
-        if hasattr(self, '_removing_metadata') and self._removing_metadata:
-            return
-        
-        if not hasattr(self, 'metadata_removal_files') or not self.metadata_removal_files:
-            return
-        
-        # Получаем все файлы из списка
-        all_items = self.metadata_removal_tree.get_children()
-        if not all_items:
-            return
-        
-        # Устанавливаем опции для удаления всех метаданных
-        remove_options = {'all': True}
-        
-        # Устанавливаем флаг обработки
-        self._removing_metadata = True
-        
-        # Инициализируем прогресс-бар
-        total_files = len(all_items)
-        self.root.after(0, lambda: self.metadata_progress_bar.config(maximum=total_files, value=0))
-        self.root.after(0, lambda: self.metadata_progress_label.config(text=f"Обработка файлов: 0 / {total_files}"))
-        
-        # Обрабатываем файлы в отдельном потоке
-        def process_files():
-            success_count = 0
-            error_count = 0
-            processed = 0
+            # Определяем статус файла
+            if available_formats:
+                status = 'Готов'
+            else:
+                status = 'Не поддерживается'
             
-            for item in all_items:
-                index = self.metadata_removal_tree.index(item)
-                if 0 <= index < len(self.metadata_removal_files):
-                    file_data = self.metadata_removal_files[index]
-                    file_path = file_data['path']
-                    
-                    # Обновляем прогресс
-                    processed += 1
-                    file_name = os.path.basename(file_path)
-                    self.root.after(0, lambda p=processed, t=total_files, fn=file_name: 
-                                   self._update_metadata_progress(p, t, fn))
-                    
-                    # Удаляем все метаданные
-                    success, message = self.metadata_remover.remove_metadata(
-                        file_path, 
-                        create_backup=True,
-                        remove_options=remove_options
-                    )
-                    
-                    # Обновляем статус в UI
-                    self.root.after(0, lambda idx=index, s=success, m=message: 
-                                   self._update_metadata_removal_status(idx, s, m))
-                    
-                    if success:
-                        success_count += 1
-                    else:
-                        error_count += 1
-            
-            # Завершаем обработку
-            self.root.after(0, lambda: self._finish_metadata_removal_auto(success_count, error_count, total_files))
-            self._removing_metadata = False
+            file_data = {
+                'path': file_path,
+                'format': ext,
+                'status': status,
+                'available_formats': available_formats,
+                'category': file_category
+            }
+            self.converter_files.append(file_data)
         
-        # Запускаем обработку в отдельном потоке
-        thread = threading.Thread(target=process_files, daemon=True)
-        thread.start()
-    
-    def _finish_metadata_removal_auto(self, success_count: int, error_count: int, total_files: int):
-        """Завершение автоматического удаления метаданных"""
-        try:
-            # Сбрасываем прогресс-бар
-            self.metadata_progress_bar.config(value=total_files)
-            self.metadata_progress_label.config(
-                text=f"Завершено: {success_count} успешно, {error_count} ошибок из {total_files}"
-            )
-            
-            # Сбрасываем галочку "Удалить все метаданные"
-            if hasattr(self, 'metadata_remove_all_var'):
-                self.metadata_remove_all_var.set(False)
-            
-            # Показываем результат
-            if success_count + error_count > 0:
-                message = f"Обработано файлов: {success_count + error_count}\n"
-                message += f"Успешно: {success_count}\n"
-                if error_count > 0:
-                    message += f"Ошибок: {error_count}"
-                messagebox.showinfo("Результат", message)
-        except Exception as e:
-            logger.error(f"Ошибка при завершении удаления метаданных: {e}")
-    
-    def _remove_all_metadata_files(self):
-        """Удаление всех метаданных из файлов (игнорируя чекбоксы) - оставлено для совместимости"""
-        # Защита от повторных вызовов
-        if hasattr(self, '_removing_metadata') and self._removing_metadata:
-            return
+        # Обновляем заголовок панели
+        if hasattr(self, 'converter_left_panel'):
+            count = len(self.converter_files)
+            self.converter_left_panel.config(text=f"Список файлов (Файлов: {count})")
         
-        if not hasattr(self, 'metadata_removal_files') or not self.metadata_removal_files:
-            messagebox.showwarning("Предупреждение", "Список файлов пуст")
-            return
+        # Применяем фильтр
+        if hasattr(self, '_filter_converter_files_by_type'):
+            self._filter_converter_files_by_type()
         
-        selected_items = self.metadata_removal_tree.selection()
-        if not selected_items:
-            # Если ничего не выбрано, обрабатываем все файлы
-            selected_items = self.metadata_removal_tree.get_children()
-            if not selected_items:
-                messagebox.showwarning("Предупреждение", "Нет файлов для обработки")
-                return
-        
-        # Устанавливаем опции для удаления всех метаданных
-        remove_options = {'all': True}
-        
-        # Устанавливаем флаг обработки
-        self._removing_metadata = True
-        
-        # Инициализируем прогресс-бар
-        total_files = len(selected_items)
-        self.root.after(0, lambda: self.metadata_progress_bar.config(maximum=total_files, value=0))
-        self.root.after(0, lambda: self.metadata_progress_label.config(text=f"Обработка файлов: 0 / {total_files}"))
-        
-        # Обрабатываем файлы в отдельном потоке
-        def process_files():
-            success_count = 0
-            error_count = 0
-            processed = 0
-            
-            for item in selected_items:
-                index = self.metadata_removal_tree.index(item)
-                if 0 <= index < len(self.metadata_removal_files):
-                    file_data = self.metadata_removal_files[index]
-                    file_path = file_data['path']
-                    
-                    # Обновляем прогресс
-                    processed += 1
-                    file_name = os.path.basename(file_path)
-                    self.root.after(0, lambda p=processed, t=total_files, fn=file_name: 
-                                   self._update_metadata_progress(p, t, fn))
-                    
-                    # Удаляем все метаданные
-                    success, message = self.metadata_remover.remove_metadata(
-                        file_path, 
-                        create_backup=True,
-                        remove_options=remove_options
-                    )
-                    
-                    # Обновляем статус в UI
-                    self.root.after(0, lambda idx=index, s=success, m=message: 
-                                   self._update_metadata_removal_status(idx, s, m))
-                    
-                    if success:
-                        success_count += 1
-                        self.log(f"Все метаданные удалены: {file_name}")
-                    else:
-                        error_count += 1
-                        self.log(f"Ошибка при удалении всех метаданных из {file_name}: {message}")
-            
-            # Сбрасываем прогресс-бар
-            self.root.after(0, lambda: self.metadata_progress_bar.config(value=0))
-            self.root.after(0, lambda: self.metadata_progress_label.config(text=""))
-            
-            # Показываем результат
-            if success_count + error_count > 0:
-                def show_result_and_clear():
-                    if not hasattr(self, '_metadata_all_result_shown'):
-                        self._metadata_all_result_shown = True
-                        messagebox.showinfo(
-                            "Результат",
-                            f"Обработано файлов: {success_count + error_count}\n"
-                            f"Успешно: {success_count}\n"
-                            f"Ошибок: {error_count}"
-                        )
-                        # Очищаем список после показа результата
-                        if hasattr(self, 'metadata_removal_tree'):
-                            self.metadata_removal_tree.delete(*self.metadata_removal_tree.get_children())
-                        self.metadata_removal_files = []
-                        if hasattr(self, 'metadata_left_panel'):
-                            self.metadata_left_panel.config(text=f"Список файлов (Файлов: 0)")
-                        self._metadata_all_result_shown = False
-                    self._removing_metadata = False
-                self.root.after(0, show_result_and_clear)
-        
-        # Запускаем обработку в отдельном потоке
-        thread = threading.Thread(target=process_files, daemon=True)
-        thread.start()
-    
-    def _clear_metadata_files_list(self):
-        """Очистка списка файлов для удаления метаданных"""
-        if not hasattr(self, 'metadata_removal_tree'):
-            return
-        
-        if messagebox.askyesno("Подтверждение", "Очистить список файлов?"):
-            self.metadata_removal_tree.delete(*self.metadata_removal_tree.get_children())
-            self.metadata_removal_files = []
-            # Обновляем заголовок панели
-            if hasattr(self, 'metadata_left_panel'):
-                self.metadata_left_panel.config(text=f"Список файлов (Файлов: 0)")
-            # Обновляем чекбоксы метаданных
-            self._update_metadata_checkboxes()
-            self.log("Список файлов для удаления метаданных очищен")
+        added_count = len(self.converter_files) if hasattr(self, 'converter_files') else 0
+        self.log(f"Добавлено файлов из контекстного меню: {added_count} из {len(self.files_from_args)}")
     
     def _add_files_for_conversion(self):
         """Добавление файлов для конвертации"""
@@ -3960,14 +3181,6 @@ class FileRenamerApp:
                 
                 # Определяем категорию файла
                 file_category = self.file_converter.get_file_type_category(file_path)
-                
-                # Формируем строку с доступными форматами
-                if available_formats:
-                    formats_str = ", ".join(available_formats[:5])  # Показываем первые 5 форматов
-                    if len(available_formats) > 5:
-                        formats_str += f" (+{len(available_formats) - 5})"
-                else:
-                    formats_str = "Не поддерживается"
                 
                 # Определяем статус файла
                 if available_formats:
@@ -4270,7 +3483,8 @@ class FileRenamerApp:
         items = self.converter_tree.get_children()
         if 0 <= index < len(items):
             item = items[index]
-            status = "Успешно" if success else f"Ошибка: {message[:30]}"
+            # Обрезаем сообщение до 50 символов для лучшего отображения
+            status = "Успешно" if success else f"Ошибка: {message[:50]}"
             current_values = self.converter_tree.item(item, 'values')
             self.converter_tree.item(item, values=(current_values[0], status))
     
@@ -4286,29 +3500,6 @@ class FileRenamerApp:
             if hasattr(self, 'converter_left_panel'):
                 self.converter_left_panel.config(text=f"Список файлов (Файлов: 0)")
             self.log("Список файлов для конвертации очищен")
-    
-    def _setup_metadata_removal_drag_drop(self, list_frame, tree, tab_frame):
-        """Настройка drag and drop для вкладки удаления метаданных"""
-        if not HAS_TKINTERDND2:
-            return
-        
-        try:
-            # Регистрируем фрейм списка файлов
-            if hasattr(list_frame, 'drop_target_register'):
-                list_frame.drop_target_register(DND_FILES)
-                list_frame.dnd_bind('<<Drop>>', lambda e: self._on_drop_metadata_files(e))
-            
-            # Регистрируем treeview
-            if hasattr(tree, 'drop_target_register'):
-                tree.drop_target_register(DND_FILES)
-                tree.dnd_bind('<<Drop>>', lambda e: self._on_drop_metadata_files(e))
-            
-            # Регистрируем всю вкладку
-            if hasattr(tab_frame, 'drop_target_register'):
-                tab_frame.drop_target_register(DND_FILES)
-                tab_frame.dnd_bind('<<Drop>>', lambda e: self._on_drop_metadata_files(e))
-        except Exception as e:
-            logger.debug(f"Не удалось настроить drag and drop для вкладки удаления метаданных: {e}")
     
     def _setup_converter_drag_drop(self, list_frame, tree, tab_frame):
         """Настройка drag and drop для вкладки конвертации"""
@@ -4333,77 +3524,6 @@ class FileRenamerApp:
         except Exception as e:
             logger.debug(f"Не удалось настроить drag and drop для вкладки конвертации: {e}")
     
-    def _on_drop_metadata_files(self, event):
-        """Обработка перетаскивания файлов на вкладку удаления метаданных"""
-        try:
-            data = event.data
-            if not data:
-                return
-            
-            # Используем ту же логику парсинга, что и в основном окне
-            import re
-            file_paths = []
-            
-            # Метод 1: Ищем пути в фигурных скобках
-            pattern = r'\{([^}]+)\}'
-            matches = re.findall(pattern, data)
-            
-            if matches:
-                file_paths = [match.strip() for match in matches if match.strip()]
-            else:
-                # Метод 2: Пробуем как один путь
-                data_clean = data.strip().strip('"').strip("'")
-                if data_clean and os.path.exists(data_clean):
-                    file_paths = [data_clean]
-            
-            # Обрабатываем файлы
-            added_count = 0
-            for file_path in file_paths:
-                file_path = file_path.strip('{}').strip('"').strip("'").strip()
-                if not file_path:
-                    continue
-                
-                try:
-                    if not os.path.isabs(file_path):
-                        file_path = os.path.abspath(file_path)
-                    else:
-                        file_path = os.path.normpath(file_path)
-                except Exception:
-                    continue
-                
-                if not os.path.exists(file_path) or not os.path.isfile(file_path):
-                    continue
-                
-                # Проверяем, что файл еще не добавлен
-                normalized_path = os.path.normpath(os.path.abspath(file_path))
-                if any(os.path.normpath(os.path.abspath(f.get('path', ''))) == normalized_path 
-                       for f in self.metadata_removal_files):
-                    continue
-                
-                file_data = {
-                    'path': file_path,
-                    'status': 'Готов'
-                }
-                self.metadata_removal_files.append(file_data)
-                
-                # Добавляем в treeview
-                file_name = os.path.basename(file_path)
-                can_remove = self.metadata_remover.can_remove_metadata(file_path)
-                status = 'Готов' if can_remove else 'Формат не поддерживается'
-                self.metadata_removal_tree.insert("", tk.END, values=(file_name, status))
-                added_count += 1
-            
-            if added_count > 0:
-                # Обновляем заголовок панели
-                if hasattr(self, 'metadata_left_panel'):
-                    count = len(self.metadata_removal_files)
-                    self.metadata_left_panel.config(text=f"Список файлов (Файлов: {count})")
-                # Обновляем чекбоксы метаданных
-                self._update_metadata_checkboxes()
-                self.log(f"✅ Добавлено файлов для удаления метаданных перетаскиванием: {added_count}")
-        except Exception as e:
-            logger.error(f"Ошибка при обработке перетаскивания файлов для удаления метаданных: {e}", exc_info=True)
-    
     def _on_drop_converter_files(self, event):
         """Обработка перетаскивания файлов на вкладку конвертации"""
         try:
@@ -4411,26 +3531,32 @@ class FileRenamerApp:
             if not data:
                 return
             
-            # Используем ту же логику парсинга, что и в основном окне
+            # Используем надежную логику парсинга из ui/drag_drop.py
             import re
             file_paths = []
             
-            # Метод 1: Ищем пути в фигурных скобках
-            pattern = r'\{([^}]+)\}'
-            matches = re.findall(pattern, data)
-            
-            if matches:
-                file_paths = [match.strip() for match in matches if match.strip()]
+            # Обрабатываем строку с путями (формат зависит от платформы)
+            if sys.platform == 'win32':
+                # Windows: пути могут быть в фигурных скобках {path1} {path2}
+                # Используем regex для более надежного парсинга
+                file_paths = re.findall(r'\{([^}]+)\}', data)
+                if not file_paths:
+                    # Если нет фигурных скобок, пробуем разделить по пробелам
+                    # Но это может быть проблематично для путей с пробелами
+                    file_paths = data.split()
             else:
-                # Метод 2: Пробуем как один путь
-                data_clean = data.strip().strip('"').strip("'")
-                if data_clean and os.path.exists(data_clean):
-                    file_paths = [data_clean]
+                # Linux/Mac: пути разделены пробелами
+                file_paths = data.split()
+            
+            # Очищаем пути от лишних пробелов и кавычек
+            file_paths = [f.strip().strip('"').strip("'") for f in file_paths if f.strip()]
+            
+            # Фильтруем только существующие файлы
+            valid_file_paths = [f for f in file_paths if os.path.exists(f) and os.path.isfile(f)]
             
             # Обрабатываем файлы
             added_count = 0
-            for file_path in file_paths:
-                file_path = file_path.strip('{}').strip('"').strip("'").strip()
+            for file_path in valid_file_paths:
                 if not file_path:
                     continue
                 
@@ -4489,101 +3615,6 @@ class FileRenamerApp:
                 self.log(f"✅ Добавлено файлов для конвертации перетаскиванием: {added_count}")
         except Exception as e:
             logger.error(f"Ошибка при обработке перетаскивания файлов для конвертации: {e}", exc_info=True)
-    
-    def _create_log_tab(self, notebook):
-        """Создание вкладки лога операций"""
-        # Фрейм для вкладки лога
-        log_tab = tk.Frame(notebook, bg=self.colors['bg_card'])
-        log_tab.columnconfigure(0, weight=1)
-        log_tab.rowconfigure(1, weight=1)
-        notebook.add(log_tab, text="Лог операций")
-        
-        # Панель управления логом
-        log_controls = tk.Frame(log_tab, bg=self.colors['bg_card'])
-        log_controls.grid(row=0, column=0, sticky="ew", padx=20, pady=(20, 10))
-        log_controls.columnconfigure(1, weight=1)
-        log_controls.columnconfigure(2, weight=1)
-        log_controls.columnconfigure(3, weight=1)
-        
-        # Заголовок
-        log_title = tk.Label(log_controls, text="Лог операций",
-                                  font=('Robot', 11, 'bold'),
-                                  bg=self.colors['bg_card'],
-                                  fg=self.colors['text_primary'])
-        log_title.grid(row=0, column=0, padx=(0, 12), sticky="w")
-        
-        # Кнопка копирования лога
-        btn_copy_log = self.create_rounded_button(
-            log_controls, "Копировать", self.copy_log,
-            self.colors['info'], 'white',
-            font=('Robot', 9, 'bold'), padx=10, pady=6,
-            active_bg=self.colors['info_hover'])
-        btn_copy_log.grid(row=0, column=1, padx=3, sticky="ew")
-        
-        btn_clear_log = self.create_rounded_button(
-            log_controls, "Очистить лог", self.clear_log,
-            self.colors['danger'], 'white',
-            font=('Robot', 9, 'bold'), padx=10, pady=6,
-            active_bg=self.colors['danger_hover'])
-        btn_clear_log.grid(row=0, column=2, padx=3, sticky="ew")
-        
-        # Кнопка выгрузки лога
-        btn_save_log = self.create_rounded_button(
-            log_controls, "Выгрузить лог", self.save_log,
-            self.colors['primary'], 'white',
-            font=('Robot', 9, 'bold'), padx=10, pady=6,
-            active_bg=self.colors['primary_hover'])
-        btn_save_log.grid(row=0, column=3, padx=3, sticky="ew")
-        
-        # Лог операций
-        log_frame = tk.Frame(log_tab, bg=self.colors['bg_card'])
-        log_frame.grid(row=1, column=0, sticky="nsew", padx=20, pady=(0, 20))
-        log_frame.columnconfigure(0, weight=1)
-        log_frame.rowconfigure(0, weight=1)
-        
-        log_container = tk.Frame(log_frame, bg=self.colors['bg_card'], 
-                                relief='flat', borderwidth=1,
-                                highlightbackground=self.colors['border'],
-                                highlightthickness=1)
-        log_container.pack(fill=tk.BOTH, expand=True)
-        
-        log_scroll = ttk.Scrollbar(log_container, orient=tk.VERTICAL)
-        log_text_widget = tk.Text(log_container, yscrollcommand=log_scroll.set,
-                                  wrap=tk.WORD, font=('Consolas', 9),
-                                  bg=self.colors['bg_secondary'],
-                                  fg=self.colors['text_primary'],
-                                  insertbackground=self.colors['text_primary'],
-                                  relief='flat', borderwidth=0,
-                                  padx=10, pady=10)
-        log_scroll.config(command=log_text_widget.yview)
-        
-        log_text_widget.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        log_scroll.pack(side=tk.RIGHT, fill=tk.Y)
-        
-        # Сохраняем ссылку на виджет лога
-        self.log_text_widget = log_text_widget
-        
-        # Привязка прокрутки колесиком мыши
-        self.bind_mousewheel(log_text_widget, log_text_widget)
-        
-        # Добавляем контекстное меню для копирования
-        log_context_menu = tk.Menu(log_text_widget, tearoff=0)
-        log_context_menu.add_command(label="Копировать", command=lambda: self._copy_selected_text(log_text_widget))
-        log_context_menu.add_command(label="Копировать всё", command=lambda: self._copy_all_text(log_text_widget))
-        log_context_menu.add_separator()
-        log_context_menu.add_command(label="Выделить всё", command=lambda: self._select_all_text(log_text_widget))
-        
-        def show_context_menu(event):
-            try:
-                log_context_menu.tk_popup(event.x_root, event.y_root)
-            finally:
-                log_context_menu.grab_release()
-        
-        log_text_widget.bind('<Button-3>', show_context_menu)  # Правый клик
-        log_text_widget.bind('<Control-c>', lambda e: self._copy_selected_text(log_text_widget))  # Ctrl+C
-        
-        # Сохраняем ссылку на log_text
-        self.logger.set_log_widget(log_text_widget)
     
     def _create_settings_tab(self, notebook):
         """Создание вкладки настроек"""
@@ -5881,29 +4912,6 @@ class FileRenamerApp:
         """Добавление сообщения в лог"""
         self.logger.log(message)
     
-    def copy_log(self):
-        """Копирование всего лога в буфер обмена"""
-        if self.logger.log_text is None:
-            messagebox.showwarning("Предупреждение", "Окно лога не открыто.")
-            return
-        
-        try:
-            log_content = self.logger.log_text.get(1.0, tk.END)
-            if not log_content.strip():
-                messagebox.showwarning("Предупреждение", "Лог пуст, нечего копировать.")
-                return
-            
-            # Копируем в буфер обмена
-            self.root.clipboard_clear()
-            self.root.clipboard_append(log_content.strip())
-            self.root.update()  # Обновляем буфер обмена
-            
-            # Показываем сообщение (без логирования, чтобы не дублировать)
-            messagebox.showinfo("Успех", "Лог успешно скопирован в буфер обмена")
-        except Exception as e:
-            logger.error(f"Не удалось скопировать лог: {e}", exc_info=True)
-            messagebox.showerror("Ошибка", f"Не удалось скопировать лог:\n{str(e)}")
-    
     def _copy_selected_text(self, text_widget):
         """Копирование выделенного текста в буфер обмена"""
         try:
@@ -5940,14 +4948,6 @@ class FileRenamerApp:
             text_widget.see(tk.INSERT)
         except Exception as e:
             logger.debug(f"Ошибка при выделении текста: {e}")
-    
-    def clear_log(self):
-        """Очистка лога операций"""
-        self.logger.clear()
-    
-    def save_log(self):
-        """Сохранение/выгрузка лога в файл"""
-        self.logger.save()
     
     def add_files(self):
         """Добавление файлов через диалог выбора"""
@@ -8666,6 +7666,49 @@ class FileRenamerApp:
 
 def main():
     """Главная функция запуска приложения."""
+    # Обработка аргументов командной строки
+    files_from_args = []
+    
+    # Логируем аргументы для отладки
+    if len(sys.argv) > 1:
+        logger.info(f"Аргументы командной строки: {sys.argv[1:]}")
+    
+    if len(sys.argv) > 1:
+        # Получаем все аргументы как пути к файлам
+        # Игнорируем аргументы, которые выглядят как опции (начинаются с -)
+        # если они не являются существующими файлами
+        for arg in sys.argv[1:]:
+            # Пропускаем аргументы, которые выглядят как опции
+            # но проверяем, не является ли это путем к файлу
+            if arg.startswith('-') and not arg.startswith('--'):
+                # Это может быть опция (например, -state) или путь к файлу, начинающийся с дефиса
+                # Проверяем, существует ли это как файл
+                normalized_arg = os.path.normpath(arg)
+                if os.path.exists(normalized_arg) and os.path.isfile(normalized_arg):
+                    files_from_args.append(normalized_arg)
+                # Если это не файл, пропускаем (это опция, которую мы не знаем)
+                continue
+            elif arg.startswith('--'):
+                # Длинная опция, пропускаем если это не файл
+                normalized_arg = os.path.normpath(arg)
+                if not (os.path.exists(normalized_arg) and os.path.isfile(normalized_arg)):
+                    continue
+            
+            # Нормализуем путь и проверяем существование
+            normalized_arg = os.path.normpath(arg)
+            if os.path.exists(normalized_arg) and os.path.isfile(normalized_arg):
+                files_from_args.append(normalized_arg)
+            else:
+                # Если путь содержит пробелы, он может быть в кавычках
+                try:
+                    cleaned_arg = arg.strip('"').strip("'")
+                    normalized_cleaned = os.path.normpath(cleaned_arg)
+                    if os.path.exists(normalized_cleaned) and os.path.isfile(normalized_cleaned):
+                        files_from_args.append(normalized_cleaned)
+                except Exception:
+                    # Игнорируем ошибки при обработке пути
+                    pass
+    
     # Используем TkinterDnD если доступно
     if HAS_TKINTERDND2:
         try:
@@ -8691,7 +7734,7 @@ def main():
         logger.warning(f"Не удалось проверить библиотеки при запуске: {e}", exc_info=True)
         # Продолжаем работу даже если проверка не удалась
     
-    app = FileRenamerApp(root, library_manager=library_manager)
+    app = FileRenamerApp(root, library_manager=library_manager, files_from_args=files_from_args)
     root.mainloop()
 
 
